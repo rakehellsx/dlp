@@ -1,0 +1,13 @@
+data/
+__pycache__/
+*.pyc
+artifacts/
+.env
+.env.*
+*.db
+*.db-wal
+*.db-shm
+*.sqlite*
+*.log
+.venv/
+.DS_Store

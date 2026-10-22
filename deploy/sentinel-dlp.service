@@ -1,0 +1,28 @@
+[Unit]
+Description=Sentinel DLP Product Prototype
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=sentinel-dlp
+Group=sentinel-dlp
+WorkingDirectory=/opt/sentinel-dlp
+Environment=DLP_DB=/var/lib/sentinel-dlp/sentinel.db
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/sentinel-dlp.env
+ExecStart=/usr/bin/python3 /opt/sentinel-dlp/server.py --host 127.0.0.1 --port 8091
+Restart=on-failure
+RestartSec=3
+StateDirectory=sentinel-dlp
+StateDirectoryMode=0750
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sentinel-dlp
+
+[Install]
+WantedBy=multi-user.target
