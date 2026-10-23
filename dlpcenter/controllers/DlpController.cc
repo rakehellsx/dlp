@@ -73,7 +73,7 @@ HttpResponsePtr dispatch(const HttpRequestPtr &req, const std::string &imageId) 
         v["product"] = "Sentinel DLP";
         v["backend"] = "dlpcenter/Drogon";
         v["database"] = "PostgreSQL";
-        v["mode"] = "prototype";
+        v["mode"] = "standalone";
         return ApiResponse::ok(v);
     }
     if (!imageId.empty()) {
@@ -202,7 +202,7 @@ HttpResponsePtr dispatch(const HttpRequestPtr &req, const std::string &imageId) 
                               "bytes FROM dlp_watermark_images");
         require(std::stoll(total.get(0, "count")) < 200 &&
                     std::stoll(total.get(0, "bytes")) + info["size"].asInt64() <= 300 * 1024 * 1024,
-                "原型最多保存200张图片、总容量300 MB");
+                "最多保存200张图片、总容量300 MB");
         auto meta = payload.get("metadata", Json::Value(Json::objectValue));
         require(meta.isObject(), "无效的图片关联信息");
         auto title = text(payload, "title", "", 100);

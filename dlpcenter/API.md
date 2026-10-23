@@ -389,3 +389,14 @@ async function sha256Hex(text) {
 - `POST /api/user/delete`：`{username}`，级联清理会话，保留历史审计。
 
 上述接口均通过 AdminFilter；普通用户不能列出或管理账号。不能删除或禁用当前登录账号。删除、禁用、启用在界面上均需确认。
+
+
+## 修改本人密码
+
+右上角账号菜单 → 修改密码，管理员和普通用户均可使用。
+
+`POST /api/user/change_password`（AuthFilter），请求 `{old_password_hash,new_password_hash}`，均为原密码的 SHA-256 十六进制值。前端要求新密码 8–128 个字符、与当前密码不同、两次输入一致。服务端在同一 PostgreSQL 事务中锁定当前账号、校验原密码、保存新的 bcrypt 哈希、清理该账号全部 `user_tokens` 并写成功审计；失败回滚，成功同时清除登录 Cookie。旧会话和旧密码失效，须使用新密码重新登录。当前密码错误会记录失败审计，不修改密码或登录状态。
+
+界面文案统一使用产品名称；`/health` 中运行模式为 `standalone`。旧部署可运行 `python scripts/update_product_copy.py` 清理内置水印记录标题和备注，脚本幂等，不修改上传图片、识别原文、关联信息或历史审计。
+
+历史系统初始化日志仅在界面上统一展示措辞，数据库审计原文及日志导出保持原样，便于追溯。用户上传图片、识别原文和用户输入内容不作全局字符串替换。

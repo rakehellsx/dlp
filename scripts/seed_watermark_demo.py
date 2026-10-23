@@ -120,7 +120,7 @@ def main():
             state[kind].extend(result['items'])
             if len(state[kind])>=result['total']:break
             page+=1
-    existing={w['filename'] for w in state['watermarkImages'] if TAG in w.get('note','')}
+    existing={w['filename'] for w in state['watermarkImages'] if w.get('filename','').startswith('watermark-demo-v1-') or TAG in w.get('note','')}
     args.output.mkdir(parents=True,exist_ok=True)
     report=[]
     for index,(kind,status,label,department,fmt,title) in enumerate(CASES,1):
@@ -134,14 +134,14 @@ def main():
         buffer=io.BytesIO();image.save(buffer,format=fmt,**({'quality':91} if fmt in {'JPEG','WEBP'} else {}))
         raw=buffer.getvalue();(args.output/filename).write_bytes(raw)
         content=f'内部使用 · {endpoint.get("user","来源待确认")} · WM-DEMO-{index:03d}\n{endpoint.get("name","未匹配终端")} · {endpoint.get("ip","待人工补充")} · {timestamp}'
-        note=f'{TAG} 合成测试样本，非真实泄漏证据。'+('演示已核验状态，用于关联终端与事件下钻。' if status=='reviewed' else '演示待核验状态，请尝试辅助识别并人工核验。')
+        note='合成测试样本，非真实泄漏证据。'+('已核验状态，用于关联终端与事件下钻。' if status=='reviewed' else '待核验状态，请尝试辅助识别并人工核验。')
         metadata={'type':kind,'status':status,'code':f'WM-DEMO-{index:03d}',
                   'user':endpoint.get('user',''),'department':endpoint.get('department',''),
                   'endpoint':endpoint.get('name',''),'ip':endpoint.get('ip',''),
                   'time':timestamp if kind!='unknown' else '', 'policyId':policy.get('id',''),
                   'content':content if status=='reviewed' else ''}
         result=api('watermark-images/import',{'filename':filename,'data':base64.b64encode(raw).decode(),
-                    'title':'[演示] '+label,'note':note,'metadata':metadata})
+                    'title':label,'note':note,'metadata':metadata})
         report.append({'filename':filename,'id':result['id'],'duplicate':result['duplicate']})
         print(f'{index:02d} {label}: '+('已存在' if result['duplicate'] else '已导入'),flush=True)
     (args.output/'manifest.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))

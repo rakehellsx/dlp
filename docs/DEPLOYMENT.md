@@ -226,3 +226,8 @@ curl --fail http://127.0.0.1:8090/health
 ## 9. 跨平台与表结构
 
 Windows 原生编译及运行见 [WINDOWS.md](WINDOWS.md)，模块和数据库表映射见 [DATABASE.md](DATABASE.md)。`DLP_PYTHON` 可配置图片处理解释器，Linux 默认 /usr/bin/python3。业务时间统一为 Asia/Shanghai，登录 Token 时间写入显式 UTC 偏移，不依赖 Windows / Linux 主机时区。
+
+
+### 账号菜单和产品文案更新
+
+更新代码及 C++ 可执行文件后，以部署环境变量运行 `python scripts/update_product_copy.py`，清理旧版本内置水印样本标题 / 备注。脚本可重复运行。右上角账号菜单提供修改密码，成功后需重新登录；发布更新本身不会变更现有密码。正式升级前使用现有备份脚本保存 PostgreSQL 和图片文件。

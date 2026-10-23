@@ -193,6 +193,33 @@ def main():
             request('/api/user/change_password',{'old_password_hash':hashlib.sha256(b'wrong').hexdigest(),'new_password_hash':user_hash},ok=False)
             print('PASS user management SQL search/filter/pagination/stats, create/duplicate, access control, self protection, disable/enable/delete and session revocation',flush=True)
 
+            original_hash=hashlib.sha256(b'Integration-Only-Password!').hexdigest()
+            changed_password='Updated-Integration-Only!'
+            changed_hash=hashlib.sha256(changed_password.encode()).hexdigest()
+            second_token=login(opener=anonymous)['token']
+            before_tokens=request('/api/user/tokens')['count']
+            request('/api/user/change_password',{'old_password_hash':original_hash,'new_password_hash':original_hash},ok=False)
+            request('/api/user/change_password',{'old_password_hash':original_hash,'new_password_hash':changed_hash},csrf=False,ok=False)
+            request('/api/user/change_password',{'old_password_hash':hashlib.sha256(b'wrong').hexdigest(),'new_password_hash':changed_hash},ok=False)
+            assert request('/api/user/tokens')['count']==before_tokens
+            request('/api/user/change_password',{'old_password_hash':original_hash,'new_password_hash':changed_hash})
+            assert not any(cookie.name=='dlp_token' for cookie in jar)
+            request('/api/user/profile',opener=anonymous,token=token,ok=False)
+            request('/api/user/profile',opener=anonymous,token=second_token,ok=False)
+            login(ok=False)
+            token=login(changed_password)['token']
+            with connect_test(environment) as db:
+                with db.cursor() as c:
+                    c.execute("SELECT password_hash FROM users WHERE username='admin'")
+                    stored=c.fetchone()[0]
+                    assert stored.startswith('$2') and original_hash not in stored and changed_hash not in stored
+                    c.execute("SELECT count(*) FROM operation_logs WHERE action='change_password' AND success AND detail LIKE '%撤销%'")
+                    assert c.fetchone()[0]==1
+            # Restore only the disposable test account so later migration/restore checks use its original password.
+            request('/api/user/change_password',{'old_password_hash':changed_hash,'new_password_hash':original_hash})
+            token=login()['token']
+            print('PASS password changes: old/same password and CSRF validation, atomic bcrypt update and audit, all-session revocation, cookie expiry and new-password login',flush=True)
+
             policy=request('/api/save',{'kind':'policies','item':{'name':'PostgreSQL policy','enabled':True}})['item']
             request('/api/save',{'kind':'policies','item':{'name':'CSRF'}},csrf=False,ok=False)
             request('/api/update',{'kind':'policies','ids':[policy['id']],'changes':{'enabled':False}})

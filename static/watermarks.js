@@ -29,7 +29,7 @@ export function createWatermarkModule(h) {
           <div class="between"><span class="wm-category-icon">${icon(ico)}</span><span class="tag">${total} 项策略</span></div>
           <h2>${label}</h2><p>${desc}</p><div class="between"><span class="wm-category-status"><i class="dot ${enabled?'green':'muted'}"></i>${enabled} 项已启用</span><span class="wm-category-more">配置管理 ${icon('arrow')}</span></div></button>`;
       }).join('')}</div>
-      <div class="info-banner">${icon('info')}当前为水印配置与效果预览原型；实际打印、桌面和截屏水印需接入终端客户端。同类策略按优先级从小到大匹配。</div>
+      <div class="info-banner">${icon('info')}配置打印、屏幕和截屏水印，实时查看效果预览。同类策略按优先级从小到大匹配，终端水印需接入客户端。</div>
       <section class="panel"><div class="tabs">${[['all','全部水印'],...Object.entries(types).map(([k,v])=>[k,v[0]])].map(([k,label])=>
         `<button class="${tab===k?'active':''}" data-action="watermark-tab" data-value="${k}">${label}<em>${k==='all'?(state.stats.counts.watermarks||0):(summary[k]?.total||0)}</em></button>`).join('')}</div>
       <div class="toolbar">${filterInput('搜索策略名称、水印内容或范围')}${filterSelect('scope',scopes(),'全部适用范围')}${filterSelect('enabledState',[['enabled','已启用'],['disabled','已停用']],'全部启用状态')}<span class="grow"></span>${btn('重置','reset','refresh')}</div>
@@ -83,7 +83,7 @@ export function createWatermarkModule(h) {
       </div></div><div class="wm-form-section wm-form-last">
       ${group('策略说明',`<input name="description" value="${esc(item.description||'')}" maxlength="240" placeholder="可填写业务场景与配置说明">`)}
       <label class="wm-checkbox"><input type="checkbox" name="enabled" ${item.enabled?'checked':''}>保存后启用此水印策略</label>
-      </div></form><aside class="wm-preview-column"><div class="between"><strong>实时效果预览</strong><span class="demo-badge">示例信息</span></div>
+      </div></form><aside class="wm-preview-column"><div class="between"><strong>实时效果预览</strong><span class="product-badge">示例信息</span></div>
       <div class="wm-preview-stage" id="watermark-live-preview">${svg(item)}</div>
       <div class="wm-preview-context" id="watermark-preview-context">${context(item)}</div>
       <p class="wm-preview-tip">${icon('info')}预览采用已保存的用户与终端信息，不会对当前电脑施加水印。</p>

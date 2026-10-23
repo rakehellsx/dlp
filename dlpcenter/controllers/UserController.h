@@ -43,15 +43,6 @@ class UserController : public drogon::HttpController<UserController> {
     void onListTokensOk(RespCallback callback, const drogon::orm::Result &r);
     void onListTokensErr(RespCallback callback, const drogon::orm::DrogonDbException &e);
 
-    void onPwdQueryOk(std::string oldHash, std::string newHash, int userId, std::string ip,
-                      RespCallback callback, const drogon::orm::Result &r);
-    void onPwdQueryErr(int userId, std::string ip, RespCallback callback,
-                       const drogon::orm::DrogonDbException &e);
-    void onPwdUpdated(int userId, std::string ip, RespCallback callback,
-                      const drogon::orm::Result &r);
-    void onPwdUpdateErr(int userId, std::string ip, RespCallback callback,
-                        const drogon::orm::DrogonDbException &e);
-
     void onCheckUserOkForCreate(std::string username, std::string passwordHash, std::string role,
                                 int operatorId, std::string ip, RespCallback callback,
                                 const drogon::orm::Result &r);

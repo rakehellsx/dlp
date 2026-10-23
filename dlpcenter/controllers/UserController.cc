@@ -195,59 +195,40 @@ void UserController::changePassword(const HttpRequestPtr &req, RespCallback &&ca
         return;
     }
 
-    // 查出当前密码哈希，与旧密码哈希做 bcrypt 校验
-    app().getDbClient()->execSqlAsync(
-        "SELECT password_hash FROM users WHERE id = $1",
-        std::function<void(const drogon::orm::Result &)>(std::bind(
-            &UserController::onPwdQueryOk, this, oldHash, newHash, userId, ip, callback, _1)),
-        std::function<void(const drogon::orm::DrogonDbException &)>(
-            std::bind(&UserController::onPwdQueryErr, this, userId, ip, callback, _1)),
-        userId);
-}
-
-void UserController::onPwdQueryOk(std::string oldHash, std::string newHash, int userId,
-                                  std::string ip, RespCallback callback, const orm::Result &r) {
-    if (r.empty()) {
-        callback(ApiResponse::error("user not found"));
-        return;
-    }
-    // 校验旧密码
-    if (!BCrypt::validatePassword(oldHash, r[0]["password_hash"].c_str())) {
-        auditLog(userId, "change_password", "", "旧密码校验失败", ip, false);
-        callback(ApiResponse::error("旧密码错误"));
-        return;
-    }
-    // 旧密码正确：对新哈希做 bcrypt 后更新
-    std::string storedHash = BCrypt::generateHash(newHash, 10);
-    app().getDbClient()->execSqlAsync(
-        "UPDATE users SET password_hash = $2 WHERE id = $1",
-        std::function<void(const drogon::orm::Result &)>(
-            std::bind(&UserController::onPwdUpdated, this, userId, ip, callback, _1)),
-        std::function<void(const drogon::orm::DrogonDbException &)>(
-            std::bind(&UserController::onPwdUpdateErr, this, userId, ip, callback, _1)),
-        userId, storedHash);
-}
-
-void UserController::onPwdQueryErr(int userId, std::string ip, RespCallback callback,
-                                   const orm::DrogonDbException &e) {
-    LOG_ERROR << "changePassword query error: " << e.base().what();
-    auditLog(userId, "change_password", "", "数据库异常", ip, false);
-    callback(ApiResponse::error("internal error"));
-}
-
-void UserController::onPwdUpdated(int userId, std::string ip, RespCallback callback,
-                                  const orm::Result &) {
-    auditLog(userId, "change_password", "", "", ip, true);
-    Json::Value ret;
-    ret["msg"] = "密码修改成功，请重新登录";
-    callback(ApiResponse::ok(ret));
-}
-
-void UserController::onPwdUpdateErr(int userId, std::string ip, RespCallback callback,
-                                    const orm::DrogonDbException &e) {
-    LOG_ERROR << "changePassword update error: " << e.base().what();
-    auditLog(userId, "change_password", "", "数据库异常", ip, false);
-    callback(ApiResponse::error("internal error"));
+    if (!WorkerPool::instance().push([oldHash, newHash, userId, ip, callback] {
+            try {
+                dlp::Pg db;
+                db.begin();
+                const auto id = std::to_string(userId);
+                auto row = db.query(
+                    "SELECT password_hash FROM users WHERE id=$1 AND NOT disabled FOR UPDATE",
+                    {id});
+                if (!row.size()) {
+                    callback(ApiResponse::error("用户不存在或已禁用"));
+                    return;
+                }
+                if (!BCrypt::validatePassword(oldHash, row.get(0, "password_hash"))) {
+                    auditLog(userId, "change_password", "", "旧密码校验失败", ip, false);
+                    callback(ApiResponse::error("当前密码错误"));
+                    return;
+                }
+                db.query("UPDATE users SET password_hash=$2 WHERE id=$1",
+                         {id, BCrypt::generateHash(newHash, 10)});
+                db.query("DELETE FROM user_tokens WHERE user_id=$1", {id});
+                db.audit(userId, "change_password", "", "用户修改本人密码，撤销全部登录会话", ip);
+                db.commit();
+                Json::Value result;
+                result["msg"] = "密码修改成功，请使用新密码重新登录";
+                auto response = ApiResponse::ok(result);
+                response->addHeader("Set-Cookie",
+                                    "dlp_token=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
+                callback(response);
+            } catch (const std::exception &e) {
+                LOG_ERROR << "changePassword error: " << e.what();
+                callback(ApiResponse::error("密码修改失败，请稍后重试"));
+            }
+        }))
+        callback(ApiResponse::error("服务繁忙，请稍后重试"));
 }
 
 // ================= 新增用户（管理员） =================
