@@ -36,7 +36,7 @@ jobs:
           echo "$PGBIN" >> "$GITHUB_PATH"
           mkdir "$RUNNER_TEMP/dlp-pg"
           "$PGBIN/initdb" -D "$RUNNER_TEMP/dlp-pg" -U postgres -A trust --encoding=UTF8 --locale=C
-          "$PGBIN/pg_ctl" -D "$RUNNER_TEMP/dlp-pg" -l "$RUNNER_TEMP/dlp-pg.log" -o '-p 55432 -h 127.0.0.1' -w start
+          "$PGBIN/pg_ctl" -D "$RUNNER_TEMP/dlp-pg" -l "$RUNNER_TEMP/dlp-pg.log" -o "-p 55432 -h 127.0.0.1 -k $RUNNER_TEMP" -w start
       - name: Windows PostgreSQL cluster
         if: runner.os == 'Windows'
         shell: pwsh
@@ -56,6 +56,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $baseline = (Get-Content dlpcenter/vcpkg.json | ConvertFrom-Json).'builtin-baseline'
+          git -C $env:VCPKG_INSTALLATION_ROOT fetch origin $baseline --depth 1
+          if ($LASTEXITCODE) { throw 'vcpkg baseline fetch failed' }
+          git -C $env:VCPKG_INSTALLATION_ROOT checkout --detach $baseline
+          if ($LASTEXITCODE) { throw 'vcpkg baseline checkout failed' }
+          & "$env:VCPKG_INSTALLATION_ROOT/bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE) { throw 'vcpkg bootstrap failed' }
           cmake -S dlpcenter -B dlpcenter/build -A x64 -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DBUILD_TESTING=ON
           if ($LASTEXITCODE) { throw 'CMake configure failed' }
       - name: Build

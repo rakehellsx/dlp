@@ -19,6 +19,10 @@ $env:DLP_PYTHON = (Resolve-Path .venv/Scripts/python.exe).Path
 git clone https://github.com/microsoft/vcpkg.git C:/tools/vcpkg
 & C:/tools/vcpkg/bootstrap-vcpkg.bat
 $env:VCPKG_ROOT = 'C:/tools/vcpkg'
+$baseline = (Get-Content dlpcenter/vcpkg.json | ConvertFrom-Json).'builtin-baseline'
+git -C $env:VCPKG_ROOT fetch origin $baseline --depth 1
+git -C $env:VCPKG_ROOT checkout --detach $baseline
+& "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
 cmake -S dlpcenter -B dlpcenter/build -A x64 `
   "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
   -DVCPKG_TARGET_TRIPLET=x64-windows -DBUILD_TESTING=ON
