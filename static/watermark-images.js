@@ -156,7 +156,7 @@ export function createWatermarkImageModule(h) {
     else if(a==='wi-view')viewer(d.id);
     else if(a==='wi-ocr')await ocr(d.id);
     else if(a==='wi-download'){
-      const res=await fetch(imageUrl(d.id)+'?download=1');if(!res.ok)throw new Error('下载失败，请重新登录后重试');
+      const res=await fetch(imageUrl(d.id)+'?download=1');if(!res.ok||res.headers.get('Content-Type')?.includes('json'))throw new Error('下载失败，请重新登录后重试');
       const w=getState().watermarkImages.find(w=>w.id===d.id);download(w.filename,await res.blob(),w.mime);toast('原图已下载');
     }
     else if(a==='wi-delete'){const w=getState().watermarkImages.find(w=>w.id===d.id);modal('删除水印图片',`<p class="detail-value" style="font-size:12px">确认删除「${esc(w.title)}」及其关联信息？</p>`,btn('取消','wi-detail','','',`data-id="${d.id}"`)+btn('确认删除','wi-delete-confirm','trash','danger',`data-id="${d.id}"`));}

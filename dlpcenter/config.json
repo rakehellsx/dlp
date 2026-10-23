@@ -1,0 +1,43 @@
+{
+  "listeners": [
+    {
+      "address": "127.0.0.1",
+      "port": 8091
+    }
+  ],
+  "db_clients": [
+    {
+      "name": "default",
+      "rdbms": "postgresql",
+      "host": "127.0.0.1",
+      "port": 5432,
+      "dbname": "dlpcenter",
+      "user": "dlpcenter",
+      "passwd": "",
+      "connection_number": 8
+    }
+  ],
+  "app": {
+    "threads_num": 4,
+    "document_root": "static",
+    "client_max_body_size": "15M",
+    "client_max_memory_body_size": "15M",
+    "enable_server_header": false,
+    "enable_date_header": true,
+    "enable_session": false,
+    "file_types": [
+      "html",
+      "css",
+      "js",
+      "svg",
+      "jpg",
+      "webp",
+      "png"
+    ],
+    "idle_connection_timeout": 60,
+    "upload_path": "/tmp/dlpcenter-uploads"
+  },
+  "log": {
+    "log_level": "INFO"
+  }
+}

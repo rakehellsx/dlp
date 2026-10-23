@@ -2,6 +2,7 @@
 import argparse
 import base64
 import getpass
+import hashlib
 import http.cookiejar
 import io
 import json
@@ -103,10 +104,13 @@ def main():
             data=json.dumps(payload,ensure_ascii=False).encode() if payload is not None else None,
             headers={'Content-Type':'application/json','X-DLP-Request':'1'})
         try:
-            with client.open(req,timeout=35) as response:return json.load(response)
+            with client.open(req,timeout=35) as response:
+                result=json.load(response)
+                if result.get('code')!=0:raise RuntimeError(result.get('error','请求失败'))
+                return result
         except urllib.error.HTTPError as exc:
             raise RuntimeError(f'{path}: {json.load(exc).get("error",exc.code)}') from None
-    api('login',{'username':args.username,'password':password})
+    api('login',{'username':args.username,'password_hash':hashlib.sha256(password.encode()).hexdigest()})
     state=api('bootstrap');existing={w['filename'] for w in state['watermarkImages'] if TAG in w.get('note','')}
     args.output.mkdir(parents=True,exist_ok=True)
     report=[]

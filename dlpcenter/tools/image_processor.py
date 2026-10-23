@@ -19,10 +19,6 @@ KINDS = {'print', 'screen', 'screenshot', 'unknown'}
 MIMES = {'JPEG': 'image/jpeg', 'PNG': 'image/png', 'WEBP': 'image/webp'}
 
 
-def migrate(c):
-    c.execute('CREATE TABLE IF NOT EXISTS watermark_images(id TEXT PRIMARY KEY, original BLOB NOT NULL, thumbnail BLOB NOT NULL, hash TEXT UNIQUE NOT NULL, mime TEXT NOT NULL)')
-
-
 def capabilities():
     try:
         from PIL import Image
@@ -110,30 +106,6 @@ def validate_metadata(payload):
     return result
 
 
-def import_image(c, payload, put, audit, now):
-    raw, thumbnail, info = parse_file(payload)
-    if not isinstance(payload.get('note', ''),str) or len(payload.get('note', '')) > 1000:
-        raise ValueError('备注不能超过1000个字符')
-    if not isinstance(payload.get('metadata', {}),dict):
-        raise ValueError('无效的图片关联信息')
-    c.execute('BEGIN IMMEDIATE')
-    duplicate = c.execute('SELECT id FROM watermark_images WHERE hash=?', (info['hash'],)).fetchone()
-    if duplicate:
-        return {'duplicate': True, 'id': duplicate[0]}
-    count, total = c.execute('SELECT count(*),coalesce(sum(length(original)),0) FROM watermark_images').fetchone()
-    if count >= 200 or total + info['size'] > 300*1024*1024:
-        raise ValueError('原型最多保存200张图片，总容量300 MB，请整理已有图片后重试')
-    meta = validate_metadata({**payload.get('metadata', {}), 'title': payload.get('title') or info['filename'].rsplit('.',1)[0][:100], 'note':payload.get('note','')})
-    if meta['policyId'] and not c.execute("SELECT 1 FROM records WHERE kind='watermarks' AND id=?",(meta['policyId'],)).fetchone():
-        raise ValueError('关联水印策略不存在，请重新选择')
-    stamp = now(); ident = 'WIMG-'+secrets.token_hex(6).upper()
-    item = {**meta, **info, 'id':ident, 'importedAt':stamp, 'updated':stamp, 'actor':'安全管理员',
-            'ocrText':'', 'ocrState':'not_run', 'ocrTime':''}
-    c.execute('INSERT INTO watermark_images VALUES(?,?,?,?,?)', (ident, raw, thumbnail, info['hash'], info['mime']))
-    put(c,'watermarkImages',item); audit(c,'导入水印图片',info['filename'],f'{info["width"]}×{info["height"]} · SHA-256 {info["hash"]}')
-    return {'duplicate':False, 'id':ident, 'item':item}
-
-
 def extract_text(raw):
     if not shutil.which('tesseract'):
         raise ValueError('当前服务器未启用文字识别组件，可手动填写水印信息')
@@ -183,3 +155,24 @@ def suggestions(text, endpoints, policies):
             hints.update(policyId=policy['id'],type=policy['type'])
             break
     return hints
+
+
+if __name__ == '__main__':
+    import sys
+    try:
+        payload = json.load(sys.stdin)
+        action = payload.get('action')
+        if action == 'import':
+            raw, thumbnail, info = parse_file(payload)
+            result = {'info': info, 'original': base64.b64encode(raw).decode(), 'thumbnail': base64.b64encode(thumbnail).decode()}
+        elif action == 'ocr':
+            text = extract_text(base64.b64decode(payload['original'], validate=True))
+            result = {'text': text, 'suggestions': suggestions(text, payload['endpoints'], payload['policies'])}
+        elif action == 'capabilities':
+            result = capabilities()
+        else:
+            raise ValueError('无效的图片处理操作')
+        json.dump({'ok': True, **result}, sys.stdout, ensure_ascii=False)
+    except Exception as error:
+        message = str(error) if isinstance(error, ValueError) else '图片处理失败，请重新选择文件'
+        json.dump({'ok': False, 'error': message}, sys.stdout, ensure_ascii=False)

@@ -1,60 +1,61 @@
 # 部署与运维
 
-适用于 Ubuntu 24.04 / Debian，使用 Python 3.10+、SQLite、Nginx 和 systemd。以下服务器安装命令以 root 执行；应用本身使用 `sentinel-dlp` 用户运行。浏览器入口为 `http://<服务器IP>:8090`，Python 后端仅监听 `127.0.0.1:8091`。
+服务端使用用户提供的 dlpcenter（C++17 / Drogon），数据库统一为 PostgreSQL；原有用户接口保留，原 Python 业务接口已迁入 C++。以下命令适用于 Ubuntu 24.04，以 root 执行。应用以 `sentinel-dlp` 用户运行，浏览器入口 `http://<服务器IP>:8090`，后端仅监听 `127.0.0.1:8091`。
 
-## 1. 安装依赖并取得源码
+## 1. 安装依赖和编译
 
 ```bash
 apt-get update
-apt-get install -y git python3 python3-pil nginx curl \
+apt-get install -y git build-essential cmake pkg-config nginx curl \
+  postgresql postgresql-client postgresql-contrib \
+  libdrogon-dev libjsoncpp-dev libpq-dev libssl-dev libcrypt-dev \
+  uuid-dev zlib1g-dev libbrotli-dev libc-ares-dev libhiredis-dev \
+  libsqlite3-dev libmariadb-dev libyaml-cpp-dev \
+  python3 python3-psycopg2 python3-bcrypt python3-pil \
   tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim fonts-noto-cjk
+systemctl enable --now postgresql
 
 git clone https://github.com/rakehellsx/dlp.git /opt/sentinel-dlp
 cd /opt/sentinel-dlp
-python3 verify.py
+cmake -S dlpcenter -B dlpcenter/build -DCMAKE_BUILD_TYPE=Release
+cmake --build dlpcenter/build -j2
 ```
 
-项目无需 Node.js、前端构建或 CDN。Pillow 用于图片校验、缩略图和演示图生成；Tesseract 用于中英文可见文字识别。仓库只包含源码与合成演示数据生成脚本，数据库及用户上传图片不在 Git 中。
+验证环境为 Drogon 1.8.7、PostgreSQL 16。部分 Drogon 系统包的 CMake 配置会引用其已编译的 SQLite / MariaDB 等驱动，故安装相应开发库；本应用的业务、账号、审计和图片均使用 PostgreSQL，没有 SQLite 运行服务。Pillow / Tesseract 通过受限时长的本地子进程处理图片，不提供第二套 HTTP 后端。前端无需构建和 CDN。
 
-## 2. 创建运行用户和数据目录
+## 2. 运行用户与数据库配置
 
 ```bash
 id sentinel-dlp >/dev/null 2>&1 || useradd --system \
   --home-dir /var/lib/sentinel-dlp --shell /usr/sbin/nologin sentinel-dlp
 install -d -o sentinel-dlp -g sentinel-dlp -m 0750 /var/lib/sentinel-dlp
 chmod -R a+rX /opt/sentinel-dlp
+cd /opt/sentinel-dlp
+python3 scripts/configure_postgres.py
 ```
 
-源代码保持 root 所有。数据库固定在 `/var/lib/sentinel-dlp/sentinel.db`，不要放入源码目录，便于升级时保留数据。上传原图与缩略图也存储在这个 SQLite 数据库中。
+脚本通过本机 PostgreSQL 的 `postgres` 系统账号创建独立 `dlpcenter` 角色及同名数据库，自动生成随机数据库密码，写入权限 0600 的 `/etc/dlpcenter.env`。不会向终端输出密码；角色无超级用户、建库和建角色权限。已有角色、数据库或环境文件会拒绝覆盖。如使用现有 PostgreSQL，参照 `deploy/dlpcenter.env.example` 手工设置连接信息，由对应库属主执行初始化。远程数据库应按网络策略配置 TLS 与访问权限。
 
-## 3. 设置首次管理员密码
+环境文件包含 `DLP_DB_HOST/PORT/NAME/USER/PASSWORD`，以及 `DLP_CONFIG`、`DLP_STATIC_ROOT`、`DLP_IMAGE_HELPER` 和监听地址；systemd 负责读取。更换源代码目录时同步修改这些绝对路径。服务配置使用 `ProtectHome=read-only`，兼容 libpq 对运行账号主目录中证书路径的检查；源码保持只读，临时文件使用 systemd 私有 `/tmp`。数据库密码与控制台登录密码相互独立。
 
-新数据库首次启动必须提供 `DLP_ADMIN_PASSWORD`。下面交互式输入密码并创建仅 root 可读的环境文件，不回显密码；文件已存在时不会覆盖。
+## 3. 新安装初始化
+
+**已有 SQLite 原型请跳过本节，按第 8 节迁移。不要先写入默认演示数据。**
 
 ```bash
-python3 - <<'PY'
-import getpass
-import json
-import os
-from pathlib import Path
-
-path = Path('/etc/sentinel-dlp.env')
-if path.exists():
-    raise SystemExit('环境文件已存在，请保留现有配置')
-password = getpass.getpass('设置 admin 初始密码：')
-confirm = getpass.getpass('再次输入密码：')
-if not password or password != confirm or '\n' in password or '\r' in password:
-    raise SystemExit('密码为空、两次不一致或包含换行，请重新设置')
-fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-with os.fdopen(fd, 'w') as output:
-    output.write('DLP_ADMIN_PASSWORD=' + json.dumps(password, ensure_ascii=False) + '\n')
-print('初始密码配置已保存')
-PY
+cd /opt/sentinel-dlp
+set -a
+. /etc/dlpcenter.env
+set +a
+read -r -s -p '设置 admin 初始密码：' DLP_ADMIN_PASSWORD
+export DLP_ADMIN_PASSWORD
+python3 scripts/init_postgres.py --with-demo
+unset DLP_ADMIN_PASSWORD
 ```
 
-账号为 `admin`。初始密码只在创建管理员时使用；已有数据库启动时不会重置密码，修改环境文件也不会修改已有账号密码。现有安装可继续使用已有数据库与登录密码。
+管理员名为 `admin`。密码按 dlpcenter 的约定以 bcrypt(SHA-256(password)) 存储，不设固定默认密码。初始化为事务操作，首次必须设置密码，已有账号不会重置。`--with-demo` 只在空业务库中导入合成演示数据，迁移标记确保删除的样本不会在重启或再次初始化后生成。
 
-## 4. 安装并启动服务
+## 4. 启动和访问
 
 ```bash
 cd /opt/sentinel-dlp
@@ -62,113 +63,134 @@ install -m 0644 deploy/sentinel-dlp.service /etc/systemd/system/sentinel-dlp.ser
 install -m 0644 deploy/sentinel-dlp.conf /etc/nginx/conf.d/sentinel-dlp.conf
 nginx -t
 systemctl daemon-reload
-systemctl enable --now sentinel-dlp
-systemctl enable --now nginx
+systemctl enable --now sentinel-dlp nginx
 systemctl reload nginx
-```
-
-Nginx 配置独立监听 8090，不修改默认站点。普通请求最大 256 KB，图片导入接口单独允许 15 MB 请求体，以容纳最大 10 MB 图片的 Base64 数据。原图 PNG / JPEG / WEBP，单次批量上传最多 5 张，每张通过独立请求上传；最多保存 200 张 / 300 MB。
-
-如果服务器有防火墙或云安全组，将 TCP 8090 对使用者所在网段放行。需要域名、HTTPS 或公网访问时，应在现有反向代理上配置 TLS 与访问范围。
-
-## 5. 检查并访问
-
-```bash
-systemctl is-active sentinel-dlp nginx
-curl --fail http://127.0.0.1:8091/health
+systemctl is-active sentinel-dlp nginx postgresql
 curl --fail http://127.0.0.1:8090/health
-tesseract --list-langs
-journalctl -u sentinel-dlp -n 50 --no-pager
 ```
 
-`/health` 返回 `status: ok`。浏览器打开 `http://<服务器IP>:8090`，使用 `admin` 和第 3 步设置的密码登录。
+健康接口应返回 `code: 0`、`status: ok`、`backend: dlpcenter/Drogon`、`database: PostgreSQL`。浏览器打开 `http://<服务器IP>:8090`，使用原有账号或初始化的 `admin` 登录。
 
-水印追踪在“工作空间 → 水印追踪”，直达路径 `/#watermark-images`。水印管理在“数据安全 → 水印管理”。
+水印管理位于“数据安全 → 水印管理”；水印追踪位于“工作空间 → 水印追踪”，直达 `/#watermark-images`。普通账号可以查看、导出和规则检测，业务写操作要求管理员。登录、用户管理和业务 API 都沿用 dlpcenter 的 JSON `code` 协议；业务失败也可能是 HTTP 200，调用方须检查 `code`。
 
-## 6. 导入 12 组水印演示数据
+Nginx 独立监听 8090，不修改其他站点；普通请求体最大 256 KB，图片导入单独允许 15 MB，以容纳每张最多 10 MB 的 Base64 图片。原图和缩略图存储为 PostgreSQL BYTEA，受登录保护。仅向需要使用的网段放行 8090；公网或跨不可信网络访问应配置 HTTPS，密码摘要仍属于凭据。
 
-在已安装 Pillow 和中文字体的机器上执行，脚本会提示输入控制台密码：
+## 5. 可选：导入水印追踪演示图
 
 ```bash
-cd /opt/sentinel-dlp
 python3 scripts/seed_watermark_demo.py --base-url http://127.0.0.1:8090
 ```
 
-也可以在自己的工作机上指定 `--base-url http://<服务器IP>:8090`。脚本生成并上传明确标注为演示的合成图片：屏幕 4 张、打印 4 张、截屏 3 张、来源未知 1 张；待核验和已核验各 6 张。包含模拟打印照片、淡色水印、三种图片格式和现有演示终端 / 策略关联。
+脚本提示控制台密码，通过登录及图片接口生成并上传 12 张合成样本：屏幕 4、打印 4、截屏 3、未知 1；已核验和待核验各 6。包含三种图片格式、淡色水印和模拟打印照片，以及演示终端 / 策略关联。重复运行按样本标识跳过已有图片，不覆盖人工修改，启动时不会自动恢复已删除图片。生成文件在被 Git 忽略的 `artifacts/watermark-demo/`。
 
-脚本通过已有 API 登录和导入，重复执行跳过已有样本；启动服务时不会自动补回删除的样本。生成的图片位于 `artifacts/watermark-demo/`，该目录被 Git 忽略。演示图及核验状态均为合成测试内容，文字识别建议仍需人工核验。
-
-## 7. 备份数据库
-
-应用可保持运行，使用 SQLite backup API 同时保存原图、缩略图、账号和业务记录：
+## 6. 验证与日志
 
 ```bash
 cd /opt/sentinel-dlp
-python3 scripts/backup_db.py \
-  --database /var/lib/sentinel-dlp/sentinel.db \
-  --output-dir /var/backups/sentinel-dlp
+runuser -u postgres -- env DLP_DB_HOST=/var/run/postgresql DLP_DB_USER=postgres \
+  DLP_DB_NAME=postgres DLP_BINARY="$PWD/dlpcenter/build/dlpcenter" /usr/bin/python3 verify.py
+journalctl -u sentinel-dlp -n 100 --no-pager
+tesseract --list-langs
 ```
 
-命令输出备份路径，备份文件权限为 0600。备份包含图片、账号密码摘要和会话，请按业务数据管理。不要只复制运行中的 `.db` 文件，WAL 中可能仍有未合并数据。
+测试在随机端口启动新进程，创建及清理 `dlp_verify_*` 临时数据库，不修改正式业务库。需使用有建库权限的测试角色，应用自身角色没有该权限。覆盖账号管理、认证权限、业务操作与并发、图片 / OCR、备份并恢复到独立临时库、重启及迁移一致性。数据库日志见 PostgreSQL 服务；识别依赖应包含 `eng` 和 `chi_sim`。
 
-## 8. 更新代码
+## 7. PostgreSQL 备份和恢复
+
+可在线备份，包含账号、Token、审计、业务 JSONB 及全部 BYTEA 原图 / 缩略图：
 
 ```bash
 cd /opt/sentinel-dlp
-python3 scripts/backup_db.py --database /var/lib/sentinel-dlp/sentinel.db \
-  --output-dir /var/backups/sentinel-dlp
-git rev-parse HEAD
-git fetch origin
-git merge --ff-only origin/main
-python3 verify.py
-install -m 0644 deploy/sentinel-dlp.service /etc/systemd/system/sentinel-dlp.service
-install -m 0644 deploy/sentinel-dlp.conf /etc/nginx/conf.d/sentinel-dlp.conf
-nginx -t
-systemctl daemon-reload
-systemctl restart sentinel-dlp
-systemctl reload nginx
-curl --fail http://127.0.0.1:8090/health
+set -a
+. /etc/dlpcenter.env
+set +a
+python3 scripts/backup_db.py --output-dir /var/backups/sentinel-dlp
 ```
 
-保留更新前的提交号和数据库备份路径。数据库升级在启动时执行，旧水印模板会迁移，已删除的配置不会自动重新生成。升级保留 `/var/lib/sentinel-dlp` 和 `/etc/sentinel-dlp.env`。
+脚本生成权限 0600 的 PostgreSQL custom 格式 `.dump` 并检查归档可读性。将备份保存在独立安全位置，定期做恢复演练；不要将数据库、图片、环境文件或备份提交到 Git。
 
-如果现有 `/opt/sentinel-dlp` 是直接复制的源码而非 Git 仓库，先备份该目录与数据库，再将旧目录改名保留，随后按第 1 步克隆到 `/opt/sentinel-dlp`，跳过初始化密码步骤并安装服务配置。已有数据库位于独立数据目录，继续使用原登录信息。
-
-## 9. 恢复数据库或回退
-
-先停止应用，避免恢复过程中继续写入。将示例备份路径替换为真实文件路径：
+恢复前停止应用并备份当前数据库。以下操作将目标库恢复为备份状态，务必确认备份和目标库正确：
 
 ```bash
 systemctl stop sentinel-dlp
-export DLP_RESTORE_BACKUP=/var/backups/sentinel-dlp/sentinel-YYYYMMDD-HHMMSS-ffffff.db
-python3 - <<'PY'
-import os
-import sqlite3
-from pathlib import Path
-
-backup = Path(os.environ['DLP_RESTORE_BACKUP']).resolve(strict=True)
-with sqlite3.connect(backup.as_uri() + '?mode=ro', uri=True) as source:
-    if source.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
-        raise SystemExit('备份校验失败')
-    with sqlite3.connect('/var/lib/sentinel-dlp/sentinel.db') as target:
-        source.backup(target)
-print('数据库已恢复')
-PY
-chown sentinel-dlp:sentinel-dlp /var/lib/sentinel-dlp/sentinel.db*
-chmod 0640 /var/lib/sentinel-dlp/sentinel.db*
+set -a
+. /etc/dlpcenter.env
+set +a
+export PGHOST="$DLP_DB_HOST" PGPORT="$DLP_DB_PORT" PGDATABASE="$DLP_DB_NAME"
+export PGUSER="$DLP_DB_USER" PGPASSWORD="$DLP_DB_PASSWORD"
+pg_restore --clean --if-exists --no-owner --no-acl --exit-on-error \
+  --dbname="$PGDATABASE" /path/to/dlpcenter-backup.dump
+unset PGPASSWORD
 systemctl start sentinel-dlp
 curl --fail http://127.0.0.1:8090/health
 ```
 
-若需要回退源码，可在停止应用后执行 `git switch --detach <更新前提交号>`，然后安装该版本的 systemd / Nginx 配置、执行 `nginx -t` 与 `systemctl daemon-reload`，再启动应用。涉及数据库结构变化时配合恢复对应版本的备份。
+## 8. 从旧 Python / SQLite 原型迁移
 
-## 10. 常见问题
+新后端不再读取 `DLP_DB` 或旧 SQLite 文件。迁移工具只读原库，事务写入 PostgreSQL，逐条比较 JSON、原图、缩略图和哈希；迁移用户、设置、审计及迁移标记，不迁移旧会话。原有 PostgreSQL 用户接口、账号及密码保持兼容；同名 PostgreSQL 账号优先保留。
 
-- 启动提示缺少 `DLP_ADMIN_PASSWORD`：新数据库未设置初始密码，检查 `/etc/sentinel-dlp.env` 和服务配置。
-- 登录密码没有随环境变量改变：已有管理员不会被自动重置，请使用原账号密码。
-- 图片导入返回 413：确认使用仓库的 Nginx 配置并成功重载，图片接口应允许 15 MB 请求体。
-- 文字识别按钮不可用或识别失败：检查 `python3 -c 'from PIL import Image'`、`command -v tesseract`、`tesseract --list-langs`，应有 `chi_sim` 与 `eng`。
-- 示例图中文字显示方框：安装 `fonts-noto-cjk` 后重新生成样本。
-- 数据库无法写入：检查 `/var/lib/sentinel-dlp` 属主为 `sentinel-dlp`，且服务的 `DLP_DB` 路径正确。
-- 502：查看 `systemctl status sentinel-dlp` 与 `journalctl -u sentinel-dlp -n 100 --no-pager`，确认 8091 监听正常。
-- 终端隔离、策略下发或暗水印解码未执行：这些属于原型边界；当前系统没有真实终端 Agent，也没有厂商暗水印解码器。
+1. 按第 1、2 节在独立目录构建新后端、创建空 PostgreSQL 数据库，先运行第 6 节测试。保留旧源码、旧 systemd 配置、旧环境文件和 SQLite 备份，便于回退。
+2. 切换前停止旧服务，使用 SQLite backup API 创建一致性备份：
+
+```bash
+systemctl stop sentinel-dlp
+install -d -m 0700 /var/backups/sentinel-dlp/sqlite-upgrade
+python3 - <<'PY'
+import os
+import sqlite3
+path='/var/backups/sentinel-dlp/sqlite-upgrade/sentinel-final.db'
+if os.path.exists(path):raise SystemExit('备份已存在，请换一个路径')
+with sqlite3.connect('/var/lib/sentinel-dlp/sentinel.db') as source:
+    with sqlite3.connect(path) as target:source.backup(target)
+os.chmod(path,0o600)
+PY
+```
+
+3. 在新代码目录加载新数据库配置并迁移。旧 SQLite 密码使用不同摘要算法，需输入原密码验证后转换为 SHA-256 + bcrypt；没有同名 PostgreSQL 账号时才转换，不会设置新默认密码：
+
+```bash
+set -a
+. /etc/dlpcenter.env
+set +a
+python3 scripts/migrate_sqlite_to_postgres.py \
+  --sqlite /var/backups/sentinel-dlp/sqlite-upgrade/sentinel-final.db
+```
+
+迁移完成会显示业务记录和图片数量。目标业务库非空会取消；已完成相同迁移则跳过，避免覆盖 PostgreSQL 后续修改。首次迁移失败会回滚，先修复问题，不要删除原 SQLite。旧系统若有多个账号，脚本逐个询问旧密码。
+
+4. 将新源码和已编译二进制部署到 `/opt/sentinel-dlp`，确认 `/etc/dlpcenter.env` 路径正确，按第 4 节安装新服务并启动。重新登录，检查水印追踪图片、策略和审计。
+5. 保留旧目录、SQLite 和旧服务配置作为只读回退材料。若切换失败，停止新服务，恢复旧源码及旧 systemd 配置，使用切换前 SQLite 备份启动旧服务。切换后 PostgreSQL 新写入的数据不会自动反向同步到 SQLite，回退前须单独保存。
+
+## 9. 后续更新
+
+```bash
+cd /opt/sentinel-dlp
+# 先按第 7 节备份，并记录回退版本。
+git rev-parse HEAD
+git pull --ff-only
+cmake -S dlpcenter -B dlpcenter/build -DCMAKE_BUILD_TYPE=Release
+cmake --build dlpcenter/build -j2
+# 按第 6 节运行集成测试。
+set -a
+. /etc/dlpcenter.env
+set +a
+python3 scripts/init_postgres.py
+install -m 0644 deploy/sentinel-dlp.service /etc/systemd/system/sentinel-dlp.service
+nginx -t
+systemctl daemon-reload
+systemctl restart sentinel-dlp
+curl --fail http://127.0.0.1:8090/health
+```
+
+保留环境文件和 PostgreSQL 数据；日常更新不再次导入 SQLite，也不自动重建演示图。无 Git 的部署目录先整体备份，再替换源代码及二进制。`init_postgres.py` 创建缺少的表，不重置已有用户或业务数据；未来破坏性结构变更应提供独立迁移脚本。
+
+## 10. 排障与原型边界
+
+- 编译找不到 UUID / Brotli / c-ares / Hiredis 等：安装第 1 节完整开发依赖，再重新运行 CMake。
+- 数据库连接失败：检查 PostgreSQL、`/etc/dlpcenter.env`、库属主与 `pg_hba.conf`；日志不得公开数据库密码。
+- 首次初始化提示 `DLP_ADMIN_PASSWORD`：通过交互输入设置；更改变量不会重置已有账号。
+- 浏览器旧会话失效：迁移后重新登录；强制刷新以载入新的登录和响应适配代码。
+- 图片返回 413：检查 Nginx 图片导入 location 的 15 MB 限制并重载。
+- OCR 不可用：检查 Pillow、Tesseract 和中英文语言包；文字识别后需人工核验。
+- 502：查看 `systemctl status sentinel-dlp` 与日志，确认 C++ 二进制已构建、8091 正常监听。
+- 系统提供产品原型和演示数据；策略下发、终端隔离、扫描和水印配置为模拟操作，没有真实 Agent、驱动或暗水印解码器。

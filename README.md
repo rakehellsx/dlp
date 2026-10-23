@@ -1,6 +1,6 @@
 # Sentinel DLP · 终端数据防泄漏产品原型
 
-一套独立部署、中文界面、具备 SQLite 持久化的可交互产品原型。前端为原生 JavaScript/CSS/SVG，后端使用 Python 3.10+，图片导入依赖 Pillow，可见文字识别使用本地 Tesseract 中英文组件，无需 Node.js 或外部 CDN。
+一套独立部署、中文界面的可交互产品原型。前端为原生 JavaScript/CSS/SVG；服务端基于提供的 `dlpcenter` 代码，使用 C++17 / Drogon，统一存储于 PostgreSQL。Python 仅负责图片处理、数据库初始化与运维脚本，可见文字识别使用本地 Tesseract，无需 Node.js 或外部 CDN。
 
 ## 快速开始
 
@@ -25,54 +25,44 @@
 10. 审计日志：记录登录、配置修改、事件处置、审批及数据导出。
 11. 系统设置：企业名称、邮箱、水印管理入口、日志保留、离线防护和通知配置。
 12. 水印管理（数据安全）：打印、屏幕、截屏三类水印策略，新建/编辑/删除/启停，按类型、名称、范围和状态筛选；支持身份动态字段、字体字号、颜色、不透明度、角度、平铺间距与布局、优先级、生效条件及适用应用。打印水印可设置打印机范围与双面水印，屏幕水印可选择显示器，截屏水印可选择截屏方式。支持实时预览与 SVG 预览下载、CSV 配置导出，操作写入审计日志。原“系统设置”中的通用水印入口改为跳转水印管理，升级时原模板自动保留到打印水印策略。
-13. 水印追踪（工作空间）：批量或拖拽导入带水印的截图 / 照片；PNG、JPEG、WEBP，每张最多10 MB、一次最多5张，最多保存200张 / 300 MB。以卡片查看缩略图，支持原图放大、旋转、下载和 SHA-256 去重；核验水印文字、编号、用户、部门、终端、IP、时间和关联策略，查看匹配的纳管终端与风险事件；支持可见文字辅助识别（中文 / 英文）、按已知终端与策略提供填充建议，须人工核验保存。提供核验状态和文本筛选、信息 CSV 导出、删除和审计。原图保存于 SQLite，需登录访问，刷新或重启后保留。
+13. 水印追踪（工作空间）：批量或拖拽导入带水印的截图 / 照片；PNG、JPEG、WEBP，每张最多10 MB、一次最多5张，最多保存200张 / 300 MB。以卡片查看缩略图，支持原图放大、旋转、下载和 SHA-256 去重；核验水印文字、编号、用户、部门、终端、IP、时间和关联策略，查看匹配的纳管终端与风险事件；支持可见文字辅助识别（中文 / 英文）、按已知终端与策略提供填充建议，须人工核验保存。提供核验状态和文本筛选、信息 CSV 导出、删除和审计。原图及缩略图保存于 PostgreSQL BYTEA，需登录访问，刷新或重启后保留。
 
 ## 原型边界
 
 终端、事件、资产均为明确标注的演示数据，首次运行初始化。策略下发、终端隔离、扫描过程和水印设置属于模拟配置，不含真实终端代理、驱动、系统级数据拦截、文件加密或邮件发送。正则识别测试仅检查手机号和身份证号格式，不进行身份真实性校验；自定义规则的检测实现为关键词匹配。真实产品需接入 Agent、检测引擎、审批执行和身份系统。图片模块实际导入并保存用户上传的图片，可识别清晰的可见文字；不实现暗水印或厂商专有编码解码。识别建议及 EXIF 信息不作为身份真实性证明。
 
-## 本地启动
+## 架构与部署
 
-Ubuntu / Debian 图片与识别依赖：
+- `dlpcenter/`：C++ 后端，包括原有用户管理、登录、角色与 Token 接口，以及迁入的业务接口。
+- `dlpcenter/services/`：PostgreSQL 参数化查询、业务校验、图片任务和工作线程池。
+- `dlpcenter/tools/image_processor.py`：图片解析 / 缩略图 / OCR 子进程，不提供 HTTP 接口、不访问数据库。
+- `dlpcenter/sql/init.sql`：用户、Token、操作日志、JSONB 业务记录、BYTEA 图片及迁移标记。
+- `static/`：前端；登录适配 `password_hash`，兼容内网 HTTP 下的 SHA-256 计算。
+- `scripts/`：初始化、SQLite 单次迁移、PostgreSQL 备份与演示图导入。
 
-```bash
-sudo apt-get install python3-pil tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim fonts-noto-cjk
-```
+安装、编译、首次初始化、既有 SQLite 升级、备份恢复见 [部署文档](docs/DEPLOYMENT.md)，接口见 [dlpcenter/API.md](dlpcenter/API.md)。
 
-```bash
-read -r -s -p '设置 admin 初始密码：' DLP_ADMIN_PASSWORD
-export DLP_ADMIN_PASSWORD
-python3 server.py --host 127.0.0.1 --port 8091
-```
-
-打开 `http://127.0.0.1:8091`。新数据库首次启动必须设置 `DLP_ADMIN_PASSWORD`；已有数据库不会重置管理员密码。`DLP_DB` 可指定 SQLite 文件路径，默认位于 `data/sentinel.db`。
-
-## 服务器部署
-
-- 源码：`/opt/sentinel-dlp`
-- 数据库：`/var/lib/sentinel-dlp/sentinel.db`
-- 后端：`127.0.0.1:8091`
-- Nginx：独立监听 `8090`，配置 `/etc/nginx/conf.d/sentinel-dlp.conf`
-- systemd：`sentinel-dlp.service`，独立非 root 用户运行，开机自启。
-- 原有 80、8080 端口的服务不变。
+默认部署源码位于 `/opt/sentinel-dlp`，配置为 `/etc/dlpcenter.env`，后端监听 `127.0.0.1:8091`，Nginx 监听 `8090`。数据库名和角色默认为 `dlpcenter`，数据库凭据由环境文件提供。`server.py` 仅为兼容旧启动命令的 C++ 启动器，不再运行 Python HTTP 服务或 SQLite。
 
 ```bash
-systemctl status sentinel-dlp
-journalctl -u sentinel-dlp -n 50 --no-pager
-systemctl restart sentinel-dlp
-nginx -t
+cmake -S dlpcenter -B dlpcenter/build -DCMAKE_BUILD_TYPE=Release
+cmake --build dlpcenter/build -j2
+# 先按部署文档创建 PostgreSQL 角色、数据库和管理员，再启动服务。
 ```
 
-在线备份数据库请使用 SQLite backup API（不要仅复制运行中的主数据库文件）：
+登录沿用 dlpcenter 的 `SHA-256 → bcrypt` 与 Bearer Token 约定；浏览器使用 HttpOnly / SameSite Cookie，写请求附带 `X-DLP-Request: 1`。普通账号可查看和导出，配置修改、图片导入 / OCR、审批等写操作要求管理员。业务 JSON 响应沿用 `code: 0/1` 约定，图片与 CSV 成功时直接返回文件内容。
 
-```python
-import sqlite3
-source = sqlite3.connect('/var/lib/sentinel-dlp/sentinel.db')
-backup = sqlite3.connect('/your-backup-path/sentinel-backup.db')
-source.backup(backup)
-backup.close()
-source.close()
+## 验证
+
+```bash
+# 测试需要能创建临时数据库的 PostgreSQL 角色；不会使用正式业务库。
+sudo -u postgres env DLP_DB_HOST=/var/run/postgresql DLP_DB_USER=postgres \
+  DLP_DB_NAME=postgres DLP_BINARY="$PWD/dlpcenter/build/dlpcenter" /usr/bin/python3 verify.py
 ```
+
+测试覆盖原有用户管理、Cookie / Bearer 认证和权限、业务配置、并发审批、扫描限制、三类水印校验、PNG / JPEG / WEBP、原图完整性、去重、OCR 保留人工信息、备份、重启持久化，以及 SQLite 到 PostgreSQL 的事务迁移与重复执行保护。测试角色需能访问源码目录。已执行 Ubuntu 24.04 / Drogon 1.8.7 / PostgreSQL 16 集成验证。
+
+2026-10-23 已完成正式环境切换：427 条原业务记录、系统设置、历史审计及 12 张水印原图 / 缩略图核对一致；Firefox 验证全部 13 个页面、HTTP 登录、水印预览及 Cookie 保护。验证了 Nginx 下超过 256 KB 的图片导入、去重、OCR、原图下载，以及 PostgreSQL 备份恢复到独立测试库。临时验证图片已清理，旧版源码和 SQLite 备份保留用于回退。
 
 ## 参考资料
 
@@ -81,22 +71,6 @@ source.close()
 - 深信服办公数据泄密分析：https://www.sangfor.com.cn/sangfor-security/office-dlp
 - 亿赛通电子文档安全管理：https://www.esafenet.com/html/2025/11_0810/22.html
 - 上邦终端数据防泄漏：https://www.shangbon.com/zdsjfxl/259.html
-
-## 验证
-
-```bash
-python3 verify.py
-```
-
-验证程序使用临时数据库和随机本地端口，不修改已部署数据。覆盖登录与会话、访问控制、配置保存/启停、事件处置、模拟隔离、审批防重复提交、识别测试、扫描并发限制、报告快照、CSV、设置校验、审计与重启后持久化。
-
-2026-10-22 已完成 Firefox 浏览器验证：11 个页面、事件筛选与溯源抽屉、策略表单与启停、内容检测、外发审批、扫描进度完成、报告生成与下载、设置保存、390px 手机布局。已复核部署页面无运行时错误，8090 可访问，服务器原有 80/8080 服务仍返回 HTTP 200。
-
-水印管理增量验证覆盖：既有数据库升级及旧水印模板迁移，三类水印策略的配置校验与重启后持久化；打印机及双面设置、屏幕显示器、截屏方式、动态字段插入、实时预览、编辑、启停、删除、SVG 下载、分类/状态/文本筛选和 390px 布局。删除的预置策略不会在重启后重新生成。升级使用 `migrations` 表仅执行一次初始化。
-
-图片模块增量验证：三种图片格式、损坏 / 伪造格式拦截、原图字节完整性、缩略图、重复去重、字段校验、终端与策略关联、CSV、重启后原图和核验信息持久化、删除与访问控制；Firefox 实测选择文件上传、关联信息编辑、原图缩放 / 旋转 / 下载、筛选、删除和 390px 页面。
-部署验证已通过 Nginx 上传大于256 KB的原图及字节校验、本地中英文文字识别、终端 / IP / 时间 / 策略匹配建议、保留人工填写内容与待核验状态；部署端浏览器验证流程完成，验证期间的临时图片已清理，原有80和8080服务正常。
-
 
 ## 水印追踪演示数据
 

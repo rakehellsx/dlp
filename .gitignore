@@ -11,3 +11,8 @@ artifacts/
 *.log
 .venv/
 .DS_Store
+dlpcenter.zip
+dlpcenter/build/
+build/
+*.dump
+logs/

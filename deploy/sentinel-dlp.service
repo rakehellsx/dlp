@@ -1,6 +1,6 @@
 [Unit]
-Description=Sentinel DLP Product Prototype
-After=network.target
+Description=Sentinel DLP Center (Drogon / PostgreSQL)
+After=network.target postgresql.service
 StartLimitIntervalSec=60
 StartLimitBurst=5
 
@@ -9,10 +9,9 @@ Type=simple
 User=sentinel-dlp
 Group=sentinel-dlp
 WorkingDirectory=/opt/sentinel-dlp
-Environment=DLP_DB=/var/lib/sentinel-dlp/sentinel.db
-Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=-/etc/sentinel-dlp.env
-ExecStart=/usr/bin/python3 /opt/sentinel-dlp/server.py --host 127.0.0.1 --port 8091
+Environment=TZ=Asia/Shanghai
+EnvironmentFile=/etc/dlpcenter.env
+ExecStart=/opt/sentinel-dlp/dlpcenter/build/dlpcenter
 Restart=on-failure
 RestartSec=3
 StateDirectory=sentinel-dlp
@@ -20,7 +19,7 @@ StateDirectoryMode=0750
 UMask=0027
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectHome=true
+ProtectHome=read-only
 ProtectSystem=strict
 ReadWritePaths=/var/lib/sentinel-dlp
 
