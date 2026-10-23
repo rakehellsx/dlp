@@ -5,6 +5,7 @@
 class UserController : public drogon::HttpController<UserController> {
   public:
     METHOD_LIST_BEGIN
+    ADD_METHOD_TO(UserController::listUsers, "/api/user/list", drogon::Get, "AdminFilter");
     ADD_METHOD_TO(UserController::profile, "/api/user/profile", drogon::Get, "AuthFilter");
     ADD_METHOD_TO(UserController::listTokens, "/api/user/tokens", drogon::Get, "AuthFilter");
     ADD_METHOD_TO(UserController::changePassword, "/api/user/change_password", drogon::Post,
@@ -13,6 +14,9 @@ class UserController : public drogon::HttpController<UserController> {
     ADD_METHOD_TO(UserController::deleteUser, "/api/user/delete", drogon::Post, "AdminFilter");
     ADD_METHOD_TO(UserController::disableUser, "/api/user/disable", drogon::Post, "AdminFilter");
     METHOD_LIST_END
+
+    void listUsers(const drogon::HttpRequestPtr &req,
+                   std::function<void(const drogon::HttpResponsePtr &)> &&callback);
 
     void profile(const drogon::HttpRequestPtr &req,
                  std::function<void(const drogon::HttpResponsePtr &)> &&callback);

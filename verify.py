@@ -134,25 +134,64 @@ def main():
             print('PASS SQL filtering, server pagination, literal wildcard/injection safety, live DB search/detail/aggregate/export and relationships',flush=True)
 
 
+            request('/api/user/list',opener=anonymous,ok=False)
+            for query in ['page=0','page=-1','page=99999999','pageSize=101','pageSize=no','role=invalid','status=invalid']:
+                request('/api/user/list?'+query,ok=False)
+            request('/api/user/delete',{'username':'admin'},ok=False)
             request('/api/user/create',{'username':{},'password_hash':[]},ok=False)
             request('/api/user/disable',{'username':'admin','disabled':'true'},ok=False)
             request('/api/user/change_password',{'old_password_hash':{},'new_password_hash':[]},ok=False)
             user_hash=hashlib.sha256(b'Regular-Test-Only!').hexdigest()
             user=request('/api/user/create',{'username':'verify-user','password_hash':user_hash,'role':'user'})
             assert isinstance(user['id'],int) and user['id']>0
+            listing=request('/api/user/list?pageSize=1')
+            assert listing['total']==2 and listing['pageSize']==1 and len(listing['items'])==1
+            assert listing['items'][0]['username']=='verify-user'
+            assert listing['stats']=={'total':2,'enabled':2,'disabled':0,'admins':1}
+            assert set(listing['items'][0])=={'id','username','role','disabled','created_at'}
+            assert request('/api/user/list?pageSize=1&page=2')['items'][0]['username']=='admin'
+            assert request('/api/user/list?pageSize=1&page=99')['page']==2
+            assert request('/api/user/list?q=VERIFY&role=user&status=enabled')['total']==1
+            assert request('/api/user/list?role=admin')['items'][0]['username']=='admin'
+            for word in ['%', '_', "' OR 1=1 --"]:
+                assert request('/api/user/list?'+urllib.parse.urlencode({'q':word}))['total']==0
+            with connect_test(environment) as db:
+                with db.cursor() as c:
+                    c.execute('SELECT username,role,disabled FROM users WHERE id=%s',(user['id'],))
+                    assert c.fetchone()==('verify-user','user',False)
+
             request('/api/user/create',{'username':'verify-user','password_hash':user_hash},ok=False)
             other=urllib.request.build_opener();regular=login('Regular-Test-Only!','verify-user',opener=other)['token']
             assert request('/api/bootstrap',opener=other,token=regular)['user']['role']=='user'
             request('/api/save',{'kind':'policies','item':{'name':'Denied'}},opener=other,token=regular,ok=False)
             request('/api/user/create',{'username':'denied','password_hash':user_hash},opener=other,token=regular,ok=False)
+            request('/api/user/list',opener=other,token=regular,ok=False)
+            request('/api/user/delete',{'username':'admin'},opener=other,token=regular,ok=False)
             request('/api/user/disable',{'username':'admin','disabled':True},ok=False)
             request('/api/user/disable',{'username':'verify-user','disabled':True})
+            disabled_users=request('/api/user/list?status=disabled')
+            assert disabled_users['total']==1 and disabled_users['items'][0]['disabled'] is True
+            assert disabled_users['stats']['disabled']==1 and disabled_users['stats']['enabled']==1
+            with connect_test(environment) as db:
+                with db.cursor() as c:
+                    c.execute('SELECT count(*) FROM user_tokens WHERE user_id=%s',(user['id'],))
+                    assert c.fetchone()[0]==0
+
             request('/api/bootstrap',opener=other,token=regular,ok=False)
             login('Regular-Test-Only!','verify-user',opener=other,ok=False)
             request('/api/user/disable',{'username':'verify-user','disabled':False})
+            assert request('/api/user/list?status=enabled')['total']==2
+            regular=login('Regular-Test-Only!','verify-user',opener=other)['token']
             request('/api/user/delete',{'username':'verify-user'})
+            assert request('/api/user/list?q=verify-user')['total']==0
+            request('/api/user/profile',opener=other,token=regular,ok=False)
+            with connect_test(environment) as db:
+                with db.cursor() as c:
+                    c.execute('SELECT count(*) FROM user_tokens WHERE user_id=%s',(user['id'],))
+                    assert c.fetchone()[0]==0
+
             request('/api/user/change_password',{'old_password_hash':hashlib.sha256(b'wrong').hexdigest(),'new_password_hash':user_hash},ok=False)
-            print('PASS existing user management create/duplicate/role/disable/enable/delete/password validation and authorization',flush=True)
+            print('PASS user management SQL search/filter/pagination/stats, create/duplicate, access control, self protection, disable/enable/delete and session revocation',flush=True)
 
             policy=request('/api/save',{'kind':'policies','item':{'name':'PostgreSQL policy','enabled':True}})['item']
             request('/api/save',{'kind':'policies','item':{'name':'CSRF'}},csrf=False,ok=False)

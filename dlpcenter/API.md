@@ -377,3 +377,15 @@ async function sha256Hex(text) {
 - `GET /api/export` 接受同一组查询筛选及排序参数，导出全部匹配结果。
 
 部门和通道选项保存在 `dlp_catalogs`；系统设置保存在 `dlp_settings`；所有策略及水印配置保存在 `dlp_records`。图片二进制由磁盘读取，`dlp_watermark_images` 保存相对路径、大小、MIME 和哈希。原 BYTEA 字段仅作为升级入口，迁移后置空，运行接口不会从中读取图片。删除后不再提供图片；不可变文件保留供一致性备份使用，备份包含文件归档。
+
+
+## 控制台用户管理（管理员）
+
+运营管理 → 用户管理使用已有账号表 `users`，不另建演示账号副本。
+
+- `GET /api/user/list?q=&role=&status=&page=1&pageSize=10`：按用户名文字检索（`%`、`_` 为普通字符），支持 role=`admin|user`、status=`enabled|disabled`，pageSize 为 1–100。返回 `items`、`total`、`page`、`pageSize` 和全库 `stats`（total / enabled / disabled / admins）。页码超出结果时回落到最后一页。检索、分页、统计均在 PostgreSQL 同一只读快照执行；只返回 id、username、role、disabled、created_at，创建时间为北京时间，不返回密码或 Token。
+- `POST /api/user/create`：`{username,password_hash,role}`。前端校验初始密码至少 8 个字符、两次输入一致，并提交 SHA-256；后端继续使用 bcrypt 存储。
+- `POST /api/user/disable`：`{username,disabled:true|false}`，禁用后撤销会话，重新启用后可使用原密码登录。
+- `POST /api/user/delete`：`{username}`，级联清理会话，保留历史审计。
+
+上述接口均通过 AdminFilter；普通用户不能列出或管理账号。不能删除或禁用当前登录账号。删除、禁用、启用在界面上均需确认。

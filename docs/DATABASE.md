@@ -16,6 +16,7 @@
 | 数据安全 | 外发审批 | `dlp_records WHERE kind='approvals'` | 审批状态、驳回原因、操作时间写回 |
 | 运营管理 | 报表中心 | `dlp_records WHERE kind='reports'` | 生成时 SQL 聚合 events / endpoints / assets 并持久化快照，后续预览 / 下载读取快照 |
 | 运营管理 | 审计日志 | `operation_logs` | 查询 / 分页 / 筛选 / 导出直接访问该表 |
+| 运营管理 | 用户管理 | `users` | 用户查询 / 搜索 / 角色与状态筛选 / 分页 / 统计均使用 SQL；新增 / 删除 / 启停写库，禁用与删除清理 `user_tokens`，操作写 `operation_logs` |
 | 运营管理 | 系统设置 | `dlp_settings WHERE id=1` | `data` 保存 company、email、retention、offlineProtection、autoUpdate、notification 等 |
 
 公共表：`users`（账号 / bcrypt 密码 / 角色 / 禁用）、`user_tokens`（登录会话）、`dlp_catalogs`（部门和通道字典）、`dlp_migrations`（初始化及迁移标记）。所有业务写操作在事务中写入并审计。图片二进制是磁盘文件，通过鉴权接口读取；数据库保存图片检索与关联信息，不在浏览器持久化业务副本。

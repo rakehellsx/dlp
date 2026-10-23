@@ -3,10 +3,88 @@
 #include "utils/AuditLog.h"
 #include <drogon/drogon.h>
 #include "utils/Password.h"
+#include "services/Pg.h"
+#include "services/WorkerPool.h"
+#include <algorithm>
+#include <regex>
 #include <sstream>
 
 using namespace drogon;
 using std::placeholders::_1;
+
+// Only public account fields leave the database; passwords and tokens are never listed.
+void UserController::listUsers(const HttpRequestPtr &req, RespCallback &&callback) {
+    if (!WorkerPool::instance().push([req, callback] {
+            try {
+                auto number = [&req](const char *key, int fallback, int maximum) {
+                    auto value = req->getParameter(key);
+                    if (value.empty())
+                        return fallback;
+                    if (!std::regex_match(value, std::regex("[0-9]{1,7}")))
+                        throw std::invalid_argument("分页参数无效");
+                    int result = std::stoi(value);
+                    if (result < 1 || result > maximum)
+                        throw std::invalid_argument("分页参数超出范围");
+                    return result;
+                };
+                auto word = req->getParameter("q"), role = req->getParameter("role"),
+                     status = req->getParameter("status");
+                if (word.size() > 256 || word.find('\0') != std::string::npos)
+                    throw std::invalid_argument("检索词过长或无效");
+                if (!role.empty() && role != "admin" && role != "user")
+                    throw std::invalid_argument("用户角色无效");
+                if (!status.empty() && status != "enabled" && status != "disabled")
+                    throw std::invalid_argument("用户状态无效");
+                int size = number("pageSize", 10, 100), page = number("page", 1, 1000000);
+                dlp::Pg db;
+                db.begin();
+                db.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+                const std::string where = " WHERE ($1='' OR strpos(lower(username),lower($1))>0)"
+                                          " AND ($2='' OR role=$2)"
+                                          " AND ($3='' OR disabled=($3='disabled'))";
+                std::vector<std::string> args = {word, role, status};
+                auto count = db.query("SELECT count(*) AS total FROM users" + where, args);
+                int total = std::stoi(count.get(0, "total"));
+                page = std::min(page, std::max(1, (total + size - 1) / size));
+                args.push_back(std::to_string(size));
+                args.push_back(std::to_string((page - 1) * size));
+                auto rows = db.query("SELECT id,username,role,disabled,"
+                                     "to_char(created_at AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD "
+                                     "HH24:MI:SS') AS created_at"
+                                     " FROM users" +
+                                         where + " ORDER BY id DESC LIMIT $4::int OFFSET $5::int",
+                                     args);
+                Json::Value result, items(Json::arrayValue);
+                for (int i = 0; i < rows.size(); ++i) {
+                    Json::Value item;
+                    item["id"] = std::stoi(rows.get(i, "id"));
+                    item["username"] = rows.get(i, "username");
+                    item["role"] = rows.get(i, "role");
+                    item["disabled"] = rows.get(i, "disabled") == "t";
+                    item["created_at"] = rows.get(i, "created_at");
+                    items.append(item);
+                }
+                auto stats = db.query(
+                    "SELECT count(*) AS total, count(*) FILTER (WHERE NOT disabled) AS enabled,"
+                    "count(*) FILTER (WHERE disabled) AS disabled,"
+                    "count(*) FILTER (WHERE role='admin') AS admins FROM users");
+                for (auto key : {"total", "enabled", "disabled", "admins"})
+                    result["stats"][key] = std::stoi(stats.get(0, key));
+                result["items"] = items;
+                result["total"] = total;
+                result["page"] = page;
+                result["pageSize"] = size;
+                db.commit();
+                callback(ApiResponse::ok(result));
+            } catch (const std::invalid_argument &e) {
+                callback(ApiResponse::error(e.what()));
+            } catch (const std::exception &e) {
+                LOG_ERROR << "listUsers error: " << e.what();
+                callback(ApiResponse::error("用户列表读取失败，请稍后重试"));
+            }
+        }))
+        callback(ApiResponse::error("服务繁忙，请稍后重试"));
+}
 
 // 校验字符串是否为 64 位十六进制（客户端提交的 sha256 哈希）
 static bool isValidSha256Hex(const std::string &s) {
