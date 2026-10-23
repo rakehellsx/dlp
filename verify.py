@@ -39,7 +39,7 @@ def main():
     admin=connect();admin.autocommit=True
     databases=[];process=None
     with tempfile.TemporaryDirectory(prefix='dlpcenter-verify-') as tmp:
-        environment=dict(os.environ,DLP_ADMIN_PASSWORD='Integration-Only-Password!',TZ='Asia/Shanghai',
+        environment=dict(os.environ,DLP_PYTHON=sys.executable,PYTHONUTF8='1',DLP_ADMIN_PASSWORD='Integration-Only-Password!',TZ='Asia/Shanghai',
             DLP_FILE_ROOT=str(Path(tmp)/'files'),DLP_IMAGE_HELPER=str(ROOT/'dlpcenter/tools/image_processor.py'),DLP_CONFIG=str(ROOT/'dlpcenter/config.json'),DLP_STATIC_ROOT=str(ROOT/'static'))
         def database():
             name='dlp_verify_'+secrets.token_hex(5)
@@ -206,7 +206,7 @@ def main():
             print('PASS PNG/JPEG/WEBP disk originals/thumbnails with PG metadata, authentication, deduplication, rejection, metadata, UTC conversion and OCR',flush=True)
 
             backup=script('backup_db.py',['--output-dir',str(Path(tmp)/'backups')]).stdout.strip()
-            assert Path(backup).stat().st_mode&0o777==0o600
+            assert os.name == 'nt' or Path(backup).stat().st_mode&0o777==0o600
             restored=database();restored_root=Path(tmp)/'restored-files'
             restored_env=dict(environment,DLP_DB_NAME=restored,DLP_FILE_ROOT=str(restored_root))
             script('restore_backup.py',['--dump',backup],env=restored_env)

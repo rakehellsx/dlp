@@ -19,6 +19,8 @@ cmake --build dlpcenter/build -j2
 
 启动前配置 PostgreSQL 环境变量并执行 `python3 scripts/init_postgres.py --with-demo`，然后从仓库根目录运行 `./dlpcenter/build/dlpcenter`。账号初始化不包含固定密码，使用 `DLP_ADMIN_PASSWORD` 设置首次密码。
 
-适配说明：修正原项目在 Drogon 1.8.7 上的异常类型、强类型 SQL 回调、缺失头文件与定时器类型；使用系统 libxcrypt 的 bcrypt 实现兼容 `BCrypt` API；创建用户使用 PostgreSQL `RETURNING id`；Token 使用 OpenSSL 随机数。管理员角色、用户禁用和 Token 失效检查继续共用原过滤器。
+适配说明：修正原项目在 Drogon 1.8.7 上的异常类型、强类型 SQL 回调、缺失头文件与定时器类型；使用随仓库提供的 Openwall crypt_blowfish 实现兼容 `BCrypt` API（Windows / Linux 共用，既有密码无需重置）；创建用户使用 PostgreSQL `RETURNING id`；Token 使用 OpenSSL 随机数。管理员角色、用户禁用和 Token 失效检查继续共用原过滤器。
 
 列表、检索、统计与关联详情见 `services/Queries.cc`，均通过 PostgreSQL SQL 执行。`bootstrap` 不再返回全量业务记录；前端通过分页接口获取当前页。图片迁移使用 `scripts/migrate_image_files.py`，设置及水印配置继续事务写入数据库。
+
+Windows（MSVC / vcpkg）与 Linux 编译运行步骤见 [WINDOWS.md](../docs/WINDOWS.md)；各模块业务表和 kind 对应见 [DATABASE.md](../docs/DATABASE.md)。平台差异集中在 `utils/Platform.cc` 和 `services/ImageWorker.cc`。

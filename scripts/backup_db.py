@@ -1,4 +1,5 @@
 """Create a PostgreSQL custom-format backup, paired with an archive of immutable disk files."""
+from pg_common import file_root
 import argparse
 from datetime import datetime
 import os
@@ -23,7 +24,7 @@ def main():
     except Exception:
         path.unlink(missing_ok=True);raise
     files=path.with_suffix('.files.tar.gz')
-    root=Path(os.environ.get('DLP_FILE_ROOT','/var/lib/sentinel-dlp/files'))
+    root=file_root()
     fd=os.open(files,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
     with os.fdopen(fd,'wb') as output:
         with tarfile.open(fileobj=output,mode='w:gz') as archive:

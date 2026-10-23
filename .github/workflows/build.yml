@@ -1,0 +1,83 @@
+name: Windows and Linux
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: '1'
+      DLP_DB_HOST: '127.0.0.1'
+      DLP_DB_PORT: '55432'
+      DLP_DB_USER: postgres
+      DLP_DB_NAME: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Python dependencies
+        run: python -m pip install -r scripts/requirements.txt
+      - name: Linux dependencies and isolated PostgreSQL cluster
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libdrogon-dev libpq-dev libssl-dev libjsoncpp-dev postgresql postgresql-client libsqlite3-dev libmariadb-dev libyaml-cpp-dev libhiredis-dev libc-ares-dev libbrotli-dev uuid-dev tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim
+          PGBIN=$(pg_config --bindir)
+          echo "$PGBIN" >> "$GITHUB_PATH"
+          mkdir "$RUNNER_TEMP/dlp-pg"
+          "$PGBIN/initdb" -D "$RUNNER_TEMP/dlp-pg" -U postgres -A trust --encoding=UTF8 --locale=C
+          "$PGBIN/pg_ctl" -D "$RUNNER_TEMP/dlp-pg" -l "$RUNNER_TEMP/dlp-pg.log" -o '-p 55432 -h 127.0.0.1' -w start
+      - name: Windows PostgreSQL cluster
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $initdb = Get-ChildItem 'C:/Program Files/PostgreSQL/*/bin/initdb.exe' | Sort-Object FullName -Descending | Select-Object -First 1
+          if (!$initdb) { throw 'PostgreSQL binaries missing from runner' }
+          $pgbin = $initdb.DirectoryName
+          $pgbin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & "$pgbin/initdb.exe" -D "$env:RUNNER_TEMP/dlp-pg" -U postgres -A trust --encoding=UTF8 --locale=C
+          if ($LASTEXITCODE) { throw 'initdb failed' }
+          & "$pgbin/pg_ctl.exe" -D "$env:RUNNER_TEMP/dlp-pg" -l "$env:RUNNER_TEMP/dlp-pg.log" -o '-p 55432 -h 127.0.0.1' -w start
+          if ($LASTEXITCODE) { throw 'pg_ctl failed' }
+      - name: Configure Linux
+        if: runner.os == 'Linux'
+        run: cmake -S dlpcenter -B dlpcenter/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+      - name: Configure Windows with pinned vcpkg manifest
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake -S dlpcenter -B dlpcenter/build -A x64 -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DBUILD_TESTING=ON
+          if ($LASTEXITCODE) { throw 'CMake configure failed' }
+      - name: Build
+        run: cmake --build dlpcenter/build --config Release --parallel 2
+      - name: Platform tests
+        shell: pwsh
+        run: |
+          $env:DLP_PYTHON = (Get-Command python).Source
+          ctest --test-dir dlpcenter/build -C Release --output-on-failure
+          if ($LASTEXITCODE) { throw 'Platform tests failed' }
+      - name: PostgreSQL integration tests
+        shell: pwsh
+        run: |
+          if ($IsWindows) { $env:DLP_BINARY = "$pwd/dlpcenter/build/Release/dlpcenter.exe" }
+          else { $env:DLP_BINARY = "$pwd/dlpcenter/build/dlpcenter" }
+          python verify.py
+          if ($LASTEXITCODE) { throw 'Integration tests failed' }
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ matrix.os }}
+          path: |
+            dlpcenter/build/**/*.log
+            ${{ runner.temp }}/dlp-pg.log

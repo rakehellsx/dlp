@@ -5,7 +5,7 @@ import hashlib
 import os
 from pathlib import Path
 import tempfile
-from pg_common import connect,schema
+from pg_common import connect,schema,file_root
 
 
 def write(root,relative,data):
@@ -22,7 +22,7 @@ def write(root,relative,data):
 
 
 def main():
-    root=Path(os.environ.get('DLP_FILE_ROOT','/var/lib/sentinel-dlp/files'));root.mkdir(parents=True,exist_ok=True,mode=0o750)
+    root=file_root();root.mkdir(parents=True,exist_ok=True,mode=0o750)
     with connect() as db:
         with db.cursor() as c:
             c.execute('SELECT pg_advisory_xact_lock(728114)');schema(c)

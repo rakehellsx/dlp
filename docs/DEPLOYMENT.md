@@ -8,7 +8,7 @@
 apt-get update
 apt-get install -y git build-essential cmake pkg-config nginx curl \
   postgresql postgresql-client postgresql-contrib \
-  libdrogon-dev libjsoncpp-dev libpq-dev libssl-dev libcrypt-dev \
+  libdrogon-dev libjsoncpp-dev libpq-dev libssl-dev \
   uuid-dev zlib1g-dev libbrotli-dev libc-ares-dev libhiredis-dev \
   libsqlite3-dev libmariadb-dev libyaml-cpp-dev \
   python3 python3-psycopg2 python3-bcrypt python3-pil \
@@ -222,3 +222,7 @@ curl --fail http://127.0.0.1:8090/health
 - OCR 不可用：检查 Pillow、Tesseract 和中英文语言包；文字识别后需人工核验。
 - 502：查看 `systemctl status sentinel-dlp` 与日志，确认 C++ 二进制已构建、8091 正常监听。
 - 系统提供产品原型和演示数据；策略下发、终端隔离、扫描和水印配置为模拟操作，没有真实 Agent、驱动或暗水印解码器。
+
+## 9. 跨平台与表结构
+
+Windows 原生编译及运行见 [WINDOWS.md](WINDOWS.md)，模块和数据库表映射见 [DATABASE.md](DATABASE.md)。`DLP_PYTHON` 可配置图片处理解释器，Linux 默认 /usr/bin/python3。业务时间统一为 Asia/Shanghai，登录 Token 时间写入显式 UTC 偏移，不依赖 Windows / Linux 主机时区。

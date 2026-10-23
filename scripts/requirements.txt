@@ -1,0 +1,4 @@
+# Runtime image processing and database initialization/maintenance, on both platforms.
+Pillow>=10.0,<13
+bcrypt>=4.0,<6
+psycopg2-binary>=2.9.9,<3

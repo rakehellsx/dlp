@@ -89,3 +89,5 @@ python3 scripts/seed_watermark_demo.py --base-url http://127.0.0.1:8090
 ```
 
 脚本通过现有登录与图片导入接口写入，按演示标识和文件名跳过已有样本，重复运行不会覆盖用户修改。图片生成至 `artifacts/watermark-demo/`。启动服务时不自动创建或恢复这些样本，在控制台删除后保持删除状态。
+
+模块与数据库表对应见 [DATABASE.md](docs/DATABASE.md)；Windows / Linux 共用源码编译及运行见 [WINDOWS.md](docs/WINDOWS.md)。双平台构建与 PostgreSQL 集成测试见 [.github/workflows/build.yml](.github/workflows/build.yml)。

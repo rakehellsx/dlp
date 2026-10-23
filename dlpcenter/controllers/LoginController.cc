@@ -3,6 +3,7 @@
 #include "utils/AuditLog.h"
 #include <drogon/drogon.h>
 #include "utils/Password.h"
+#include "utils/Platform.h"
 #include "utils/AuthToken.h"
 #include <random>
 #include <chrono>
@@ -31,10 +32,9 @@ static std::string generateToken() {
 // time_point 格式化为 PG timestamp 字符串
 static std::string formatTimestamp(std::chrono::system_clock::time_point tp) {
     std::time_t t = std::chrono::system_clock::to_time_t(tp);
-    std::tm tm{};
-    localtime_r(&t, &tm);
+    auto tm = dlp::utcTime(t);
     std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << "+00:00";
     return oss.str();
 }
 

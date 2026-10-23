@@ -16,3 +16,10 @@ dlpcenter/build/
 build/
 *.dump
 logs/
+
+vcpkg_installed/
+.vs/
+CMakeUserPresets.json
+*.exe
+*.dll
+*.obj

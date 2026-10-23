@@ -3,7 +3,13 @@
 #include <set>
 #include <regex>
 #include <cmath>
+#include "utils/Platform.h"
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
+#endif
 #include <ctime>
 #include <iomanip>
 #include <sstream>
@@ -162,7 +168,7 @@ Json::Value metadata(const Json::Value &v) {
         tm.tm_hour = h;
         tm.tm_min = min;
         tm.tm_sec = sec;
-        auto seconds = timegm(&tm);
+        auto seconds = makeUtcTime(tm);
         require(tm.tm_year == yr - 1900 && tm.tm_mon == mo - 1 && tm.tm_mday == day,
                 "水印日期无效");
         if (m[7].matched) {
@@ -174,7 +180,7 @@ Json::Value metadata(const Json::Value &v) {
                 offset = (zh * 60 + zm) * 60 * (zone[0] == '-' ? -1 : 1);
             }
             seconds += 8 * 3600 - offset;
-            gmtime_r(&seconds, &tm);
+            tm = utcTime(seconds);
         }
         std::ostringstream out;
         out << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");

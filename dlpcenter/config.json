@@ -35,7 +35,7 @@
       "png"
     ],
     "idle_connection_timeout": 60,
-    "upload_path": "/tmp/dlpcenter-uploads"
+    "upload_path": "uploads"
   },
   "log": {
     "log_level": "INFO"

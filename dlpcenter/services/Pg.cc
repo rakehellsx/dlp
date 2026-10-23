@@ -21,8 +21,7 @@ Json::Value parse(const std::string &s) {
 }
 std::string now() {
     auto t = std::time(nullptr);
-    std::tm tm{};
-    localtime_r(&t, &tm);
+    auto tm = chinaTime(t);
     std::ostringstream s;
     s << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
     return s.str();

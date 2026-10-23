@@ -9,14 +9,14 @@ import re
 import subprocess
 import tarfile
 import tempfile
-from pg_common import connect
+from pg_common import connect,file_root
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dump',type=Path,required=True)
     args=parser.parse_args();dump=args.dump.resolve(strict=True);files=dump.with_suffix('.files.tar.gz').resolve(strict=True)
-    root=Path(os.environ.get('DLP_FILE_ROOT','/var/lib/sentinel-dlp/files'))
+    root=file_root()
     if root.exists() and any(root.iterdir()):raise SystemExit('目标文件目录非空，已取消恢复；请使用新的目录')
     with connect() as db:
         with db.cursor() as c:

@@ -1,6 +1,6 @@
 """Initialize the imported dlpcenter schema and optionally seed the DLP prototype."""
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -35,7 +35,7 @@ def main():
                     for row in fixture['records']:
                         item=row['data']
                         if row['kind']=='events':
-                            item['time']=(datetime.now()-timedelta(hours=((event_index/186)**1.45)*7*24,minutes=event_index%5*4+3)).strftime('%Y-%m-%d %H:%M:%S');event_index+=1
+                            item['time']=(datetime.now(timezone(timedelta(hours=8)))-timedelta(hours=((event_index/186)**1.45)*7*24,minutes=event_index%5*4+3)).strftime('%Y-%m-%d %H:%M:%S');event_index+=1
                         c.execute('INSERT INTO dlp_records(kind,id,data) VALUES(%s,%s,%s)',(row['kind'],item['id'],Json(item)))
                     c.execute('INSERT INTO dlp_settings(id,data) VALUES(1,%s) ON CONFLICT(id) DO NOTHING',(Json(fixture['settings']),))
                     c.execute("INSERT INTO dlp_migrations(name) VALUES('prototype-demo-v1'),('watermarks-v1') ON CONFLICT DO NOTHING")

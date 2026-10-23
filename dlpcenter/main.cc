@@ -49,12 +49,11 @@ class DailyScheduler {
 static std::chrono::system_clock::time_point nextDailyTime(int hour, int minute) {
     auto now = std::chrono::system_clock::now();
     std::time_t t = std::chrono::system_clock::to_time_t(now);
-    std::tm tm{};
-    localtime_r(&t, &tm);
+    auto tm = dlp::chinaTime(t);
     tm.tm_hour = hour;
     tm.tm_min = minute;
     tm.tm_sec = 0;
-    auto target = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+    auto target = std::chrono::system_clock::from_time_t(dlp::makeUtcTime(tm) - 8 * 3600);
     if (target <= now)
         target += std::chrono::hours(24);
     return target;
@@ -76,10 +75,8 @@ static void warmUpDb() {
 }
 
 int main() {
-    setenv("TZ", "Asia/Shanghai", 1);
-    tzset();
     const auto configPath = dlp::env("DLP_CONFIG", "dlpcenter/config.json");
-    std::ifstream input(configPath);
+    std::ifstream input(std::filesystem::u8path(configPath));
     if (!input)
         throw std::runtime_error("Cannot open DLP_CONFIG");
     auto config = dlp::parse(std::string((std::istreambuf_iterator<char>(input)), {}));
@@ -92,6 +89,9 @@ int main() {
     db["user"] = dlp::env("DLP_DB_USER", "dlpcenter");
     db["passwd"] = dlp::env("DLP_DB_PASSWORD");
     config["app"]["document_root"] = dlp::env("DLP_STATIC_ROOT", "static");
+    config["app"]["upload_path"] =
+        dlp::env("DLP_UPLOAD_ROOT",
+                 (std::filesystem::temp_directory_path() / "dlpcenter-uploads").u8string());
     app().loadConfigJson(config);
     app().registerPostHandlingAdvice([](const HttpRequestPtr &, const HttpResponsePtr &response) {
         response->addHeader("X-Content-Type-Options", "nosniff");

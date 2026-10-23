@@ -16,3 +16,7 @@ def connect():
 
 def schema(cursor):
     cursor.execute((ROOT/'dlpcenter'/'sql'/'init.sql').read_text())
+
+
+def file_root():
+    return Path(os.environ.get('DLP_FILE_ROOT', 'data/files' if os.name == 'nt' else '/var/lib/sentinel-dlp/files'))

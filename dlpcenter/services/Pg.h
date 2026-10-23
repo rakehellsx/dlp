@@ -4,12 +4,8 @@
 #include <vector>
 #include <string>
 #include <stdexcept>
-#include <cstdlib>
+#include "utils/Platform.h"
 namespace dlp {
-inline std::string env(const char *name, const std::string &fallback = "") {
-    auto v = std::getenv(name);
-    return v ? v : fallback;
-}
 std::string dump(const Json::Value &v);
 Json::Value parse(const std::string &s);
 std::string now();
