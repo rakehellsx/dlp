@@ -411,3 +411,10 @@ async function sha256Hex(text) {
 `POST /api/watermark-images/save` 和 import 的 metadata 增加 `endpointUid`，空值表示未关联，非空须存在于终端表。名称与 IP 只作为图片信息保留，不会自动绑定终端。OCR 可建议 endpointUid，但须核验并保存后生效。前端核验界面支持从分页数据库查询结果选择终端。
 
 UUID 不可通过通用 update 修改；终端 update 仍只接受 isolated / policy。设备主键不可变、外键必须有效、有业务关联的设备不可直接删除，均由 PostgreSQL 约束。数据结构见 `sql/endpoints.sql`，升级工具见 `scripts/migrate_endpoints.py`。
+
+
+## 水印识别结果入库
+
+图片导入时解析格式 / 尺寸 / EXIF / 哈希并生成缩略图，默认不执行 OCR，`ocrState=not_run`。调用 `POST /api/watermark-images/ocr {id}` 后自动保存 `ocrText`、`ocrTime`、`ocrState` 及新字段 `ocrSuggestions`，并保留原响应 `{item,suggestions}`。`ocrSuggestions` 为候选对象，可包含 code / ip / time / endpoint / endpointUid / user / department / policyId / type；旧记录可能缺少此键。仅调用 OCR 不改变正式关联、已核验字段或核验状态。
+
+图片核验保存接口继续接收根 metadata，确认后才写入正式字段与终端 UUID 外键。只支持可见水印文字 OCR，不是暗水印解码；失败返回错误并保持原记录。详情接口可以重新读取持久化候选对象。字段说明见 [DATA-DICTIONARY.md](../docs/DATA-DICTIONARY.md)，批量 JSON 生成 / 导入见 [BUSINESS-DATA.md](../docs/BUSINESS-DATA.md)。

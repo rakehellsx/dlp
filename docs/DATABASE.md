@@ -1,10 +1,12 @@
 # PostgreSQL 模块与表对应
 
+完整表字段及 JSON 键见 [DATA-DICTIONARY.md](DATA-DICTIONARY.md)；批量生成 / 导入工具见 [BUSINESS-DATA.md](BUSINESS-DATA.md)。
+
 所有业务查询、检索、分页、统计、配置保存均使用 PostgreSQL。终端采用独立的结构化 `endpoints` 表，其他业务实体使用 `dlp_records` 的 JSONB 模型，由 `(kind,id)` 唯一标识。`dlp_records.endpoint_uid` 是指向终端主键的真实 UUID 外键，关联记录中的 JSON `endpointUid` 与该列同步。
 
 | 导航分组 | 子模块 | 业务表 / 标识 | 其他读取与写入 |
 | --- | --- | --- | --- |
-| 工作空间 | 安全态势 | `dlp_records`：events / endpoints / assets / policies / approvals | 终端数量与状态读取 `endpoints`；SQL 聚合、`dlp_catalogs` 通道字典 |
+| 工作空间 | 安全态势 | `dlp_records`：events / assets / policies / approvals；`endpoints` | 终端数量与状态读取 `endpoints`；SQL 聚合、`dlp_catalogs` 通道字典 |
 | 工作空间 | 风险事件 | `dlp_records WHERE kind='events'` | 处置状态、备注写回 `data`；操作写 `operation_logs` |
 | 工作空间 | 终端管理 | `endpoints` | `endpoint_uid` 为不可变 UUID 主键，`endpoint_code` 为原 EP 编码；隔离、策略、状态等写入独立字段；通过 UUID 外键关联 events / assets / watermarkImages |
 | 工作空间 | 水印追踪 | `dlp_records WHERE kind='watermarkImages'` | `dlp_watermark_images` 保存路径 / 哈希 / MIME / 大小；关联 endpoints / events / watermarks |
@@ -13,7 +15,7 @@
 | 数据安全 | 分类分级 | `dlp_records WHERE kind='rules'` | 规则配置 / 启停持久化；分类资产数量从 assets 聚合 |
 | 数据安全 | 通道管控 | `dlp_catalogs WHERE category='channel'` | 通道策略读取 policies，事件与阻断数量从 events 聚合；通道页“配置策略”进入防护策略保存，无独立通道配置表 |
 | 数据安全 | 水印管理 | `dlp_records WHERE kind='watermarks'` | type=print / screen / screenshot；内容、样式、生效范围、启停状态等均写 `data` |
-| 数据安全 | 外发审批 | `dlp_records WHERE kind='approvals'` | 审批状态、驳回原因、操作时间写回 |
+| 数据安全 | 外发审批 | `dlp_records WHERE kind='approvals'` | 审批状态、审批意见写回；当前没有独立审批处理时间字段 |
 | 运营管理 | 报表中心 | `dlp_records WHERE kind='reports'` | 生成时 SQL 聚合 events / endpoints / assets 并持久化快照，后续预览 / 下载读取快照 |
 | 运营管理 | 审计日志 | `operation_logs` | 查询 / 分页 / 筛选 / 导出直接访问该表 |
 | 运营管理 | 用户管理 | `users` | 用户查询 / 搜索 / 角色与状态筛选 / 分页 / 统计均使用 SQL；新增 / 删除 / 启停写库，禁用与删除清理 `user_tokens`，操作写 `operation_logs` |

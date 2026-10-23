@@ -231,6 +231,7 @@ HttpResponsePtr dispatch(const HttpRequestPtr &req, const std::string &imageId) 
         item["ocrText"] = "";
         item["ocrState"] = "not_run";
         item["ocrTime"] = "";
+        item["ocrSuggestions"] = Json::Value(Json::objectValue);
         db.put("watermarkImages", item);
         auto originalPath = info["hash"].asString() + "/original",
              thumbnailPath = info["hash"].asString() + "/thumbnail.jpg";
@@ -299,6 +300,7 @@ HttpResponsePtr dispatch(const HttpRequestPtr &req, const std::string &imageId) 
             item["ocrText"] = extracted["text"];
             item["ocrState"] = extracted["text"].asString().empty() ? "empty" : "completed";
             item["ocrTime"] = now();
+            item["ocrSuggestions"] = extracted["suggestions"];
             db.put("watermarkImages", item);
             db.audit(actor, "识别水印图片文字", item["filename"].asString(), "识别结果待人工核验",
                      ip);

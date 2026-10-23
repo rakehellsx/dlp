@@ -246,3 +246,8 @@ Windows 原生编译及运行见 [WINDOWS.md](WINDOWS.md)，模块和数据库�
 终端 UUID 由数据库生成，是稳定的业务身份，不由 IP、主机名或操作系统推导。未来 Agent 注册时应领取并持久化该 UUID；本次不包含硬件指纹注册协议。保留原 EP 编码兼容已有链接，新增关联使用 `endpointUid`。
 
 回滚需要同时恢复升级前数据库和升级前服务端 / 前端，不能仅更换二进制：旧程序依赖 JSONB 终端行，而新程序使用独立表。优先将升级前配套备份恢复到一个新空库及新文件目录，校验后切回旧版本；禁止将旧默认数据重新导入正式业务库。恢复命令见第 7 节。
+
+
+### 数据字典、批量导入及 OCR 候选持久化
+
+完整表字段见 [DATA-DICTIONARY.md](DATA-DICTIONARY.md)，工具命令见 [BUSINESS-DATA.md](BUSINESS-DATA.md)。更新 `scripts/business_data.py`、文档以及 C++ 控制器并重新构建 / 重启服务；本次新增 `data.ocrSuggestions` JSON 键，无需 ALTER TABLE 或重置已有记录。旧图片不自动重新识别，下一次调用OCR后即持久化候选字段。入库脚本默认不覆盖记录及系统设置，可先 --dry-run。

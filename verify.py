@@ -89,6 +89,55 @@ def main():
             rejected=script('init_postgres.py',['--with-demo'],env=no_password,check=False)
             assert rejected.returncode and 'DLP_ADMIN_PASSWORD' in rejected.stderr
             script('init_postgres.py',['--with-demo']);script('init_postgres.py',['--with-demo'])
+            # Batch data tooling uses a fresh database and a private file root.
+            batch_env=dict(environment,DLP_DB_NAME=database(),DLP_FILE_ROOT=str(Path(tmp)/'batch-files'))
+            script('init_postgres.py',env=batch_env)
+            batch_path=Path(tmp)/'business.json'
+            script('business_data.py',['generate','--output',str(batch_path),'--prefix','VERIFY','--endpoints','3','--events','5','--assets','4','--approvals','2','--images','1'],env=batch_env)
+            bundle=json.loads(batch_path.read_text(encoding='utf-8'))
+            script('business_data.py',['import','--input',str(batch_path),'--dry-run'],env=batch_env)
+            with connect_test(batch_env) as db,db.cursor() as c:
+                c.execute('SELECT count(*) FROM endpoints');assert c.fetchone()[0]==0
+                c.execute('SELECT count(*) FROM dlp_records');assert c.fetchone()[0]==0
+                c.execute('SELECT count(*) FROM operation_logs');assert c.fetchone()[0]==0
+            assert not Path(batch_env['DLP_FILE_ROOT']).exists()
+            import shutil
+            batch_ocr=bool(shutil.which('tesseract'))
+            script('business_data.py',['import','--input',str(batch_path),*(['--ocr'] if batch_ocr else [])],env=batch_env)
+            with connect_test(batch_env) as db,db.cursor() as c:
+                c.execute('SELECT count(*) FROM endpoints');assert c.fetchone()[0]==3
+                c.execute("SELECT count(*) FROM dlp_records WHERE endpoint_uid IS NOT NULL");assert c.fetchone()[0]==11
+                c.execute('SELECT original_path,original FROM dlp_watermark_images');path,blob=c.fetchone();assert blob is None and (Path(batch_env['DLP_FILE_ROOT'])/path).is_file()
+                c.execute("SELECT data FROM dlp_records WHERE kind='watermarkImages'");image=c.fetchone()[0]
+                if batch_ocr:
+                    assert image['ocrState']=='completed' and image['ocrText'] and image['ocrSuggestions'].get('ip')
+                    assert not image.get('endpointUid') and image['status']=='pending'
+                else:
+                    assert image['ocrState']=='not_run' and image['ocrSuggestions']=={}
+            assert script('business_data.py',['import','--input',str(batch_path)],env=batch_env,check=False).returncode
+            script('business_data.py',['import','--input',str(batch_path),'--on-conflict','skip'],env=batch_env)
+            # An invalid UUID reference after a valid terminal insert must roll back the whole batch.
+            import copy,uuid
+            bad_endpoint=copy.deepcopy(next(r for r in bundle['records'] if r['kind']=='endpoints'))
+            bad_endpoint['data'].update(id='EP-ROLLBACK',endpointUid=str(uuid.uuid4()))
+            bad_event=copy.deepcopy(next(r for r in bundle['records'] if r['kind']=='events'))
+            bad_event['data'].update(id='EV-ROLLBACK',endpointUid=str(uuid.uuid4()))
+            bad_path=Path(tmp)/'business-invalid.json'
+            bad_path.write_text(json.dumps({'schemaVersion':1,'records':[bad_endpoint,bad_event]}),encoding='utf-8')
+            assert script('business_data.py',['import','--input',str(bad_path)],env=batch_env,check=False).returncode
+            with connect_test(batch_env) as db,db.cursor() as c:
+                c.execute("SELECT count(*) FROM endpoints WHERE endpoint_code='EP-ROLLBACK'");assert c.fetchone()[0]==0
+                c.execute('SELECT count(*) FROM operation_logs');assert c.fetchone()[0]==2
+            bundle['settings']['company']='Batch import settings'
+            settings_path=Path(tmp)/'settings-only.json'
+            settings_path.write_text(json.dumps({'schemaVersion':1,'records':[],'settings':bundle['settings'],'catalogs':[]}),encoding='utf-8')
+            script('business_data.py',['import','--input',str(settings_path)],env=batch_env)
+            with connect_test(batch_env) as db,db.cursor() as c:
+                c.execute('SELECT data FROM dlp_settings');assert c.fetchone()[0]['company']!='Batch import settings'
+            script('business_data.py',['import','--input',str(settings_path),'--apply-settings'],env=batch_env)
+            with connect_test(batch_env) as db,db.cursor() as c:
+                c.execute('SELECT data FROM dlp_settings');assert c.fetchone()[0]['company']=='Batch import settings'
+            print('PASS business JSON generation, dry-run, disk image import, UUID links, duplicate handling, all-or-nothing rollback and explicit settings opt-in',flush=True)
             # Exercise a legacy PostgreSQL layout, including ambiguous and conflicting evidence.
             legacy_endpoint_env=dict(environment,DLP_DB_NAME=database())
             with connect_test(legacy_endpoint_env) as db,db.cursor() as c:
@@ -327,6 +376,11 @@ def main():
             saved=request('/api/watermark-images/save',{'id':image_id,'metadata':metadata})['item'];assert saved['time']=='2026-10-23 10:30:00'
             if data['imageCapabilities']['ocr']:
                 recognized=request('/api/watermark-images/ocr',{'id':image_id});assert recognized['item']['content']=='已核验水印'
+                assert recognized['item']['ocrSuggestions']==recognized['suggestions']
+                with connect_test(environment) as db,db.cursor() as c:
+                    c.execute("SELECT data FROM dlp_records WHERE kind='watermarkImages' AND id=%s",(image_id,))
+                    ocr_stored=c.fetchone()[0]
+                    assert ocr_stored['ocrSuggestions']==recognized['suggestions'] and ocr_stored['ocrText']==recognized['item']['ocrText']
             print('PASS PNG/JPEG/WEBP disk originals/thumbnails with PG metadata, authentication, deduplication, rejection, metadata, UTC conversion and OCR',flush=True)
 
             backup=script('backup_db.py',['--output-dir',str(Path(tmp)/'backups')]).stdout.strip()
