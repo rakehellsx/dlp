@@ -8,6 +8,7 @@ import os
 import bcrypt
 from psycopg2.extras import Json
 from pg_common import ROOT, connect, schema
+from migrate_endpoints import migrate
 
 
 def main():
@@ -31,6 +32,10 @@ def main():
                 if not c.fetchone():
                     c.execute("SELECT 1 FROM dlp_records LIMIT 1")
                     if c.fetchone():raise SystemExit('业务库已有记录，未导入默认演示数据；请保留已有数据')
+                    c.execute("SELECT to_regclass('public.endpoints')")
+                    if c.fetchone()[0]:
+                        c.execute('SELECT 1 FROM endpoints LIMIT 1')
+                        if c.fetchone():raise SystemExit('终端表已有记录，未导入默认演示数据；请保留已有数据')
                     event_index=0
                     for row in fixture['records']:
                         item=row['data']
@@ -39,6 +44,7 @@ def main():
                         c.execute('INSERT INTO dlp_records(kind,id,data) VALUES(%s,%s,%s)',(row['kind'],item['id'],Json(item)))
                     c.execute('INSERT INTO dlp_settings(id,data) VALUES(1,%s) ON CONFLICT(id) DO NOTHING',(Json(fixture['settings']),))
                     c.execute("INSERT INTO dlp_migrations(name) VALUES('prototype-demo-v1'),('watermarks-v1') ON CONFLICT DO NOTHING")
+            migrate(c)
             print('PostgreSQL schema and administrator ready'+('; demo initialization requested' if args.with_demo else ''))
 
 

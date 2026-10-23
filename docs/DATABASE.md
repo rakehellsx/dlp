@@ -1,12 +1,12 @@
 # PostgreSQL 模块与表对应
 
-所有业务查询、检索、分页、统计、配置保存均使用 PostgreSQL。当前为原型的通用 JSONB 模型：业务实体共用 `dlp_records`，由 `(kind,id)` 唯一标识，具体字段在 `data` 中；并非每个模块各建一张表。
+所有业务查询、检索、分页、统计、配置保存均使用 PostgreSQL。终端采用独立的结构化 `endpoints` 表，其他业务实体使用 `dlp_records` 的 JSONB 模型，由 `(kind,id)` 唯一标识。`dlp_records.endpoint_uid` 是指向终端主键的真实 UUID 外键，关联记录中的 JSON `endpointUid` 与该列同步。
 
 | 导航分组 | 子模块 | 业务表 / 标识 | 其他读取与写入 |
 | --- | --- | --- | --- |
-| 工作空间 | 安全态势 | `dlp_records`：events / endpoints / assets / policies / approvals | SQL 聚合、`dlp_catalogs` 通道字典 |
+| 工作空间 | 安全态势 | `dlp_records`：events / endpoints / assets / policies / approvals | 终端数量与状态读取 `endpoints`；SQL 聚合、`dlp_catalogs` 通道字典 |
 | 工作空间 | 风险事件 | `dlp_records WHERE kind='events'` | 处置状态、备注写回 `data`；操作写 `operation_logs` |
-| 工作空间 | 终端管理 | `dlp_records WHERE kind='endpoints'` | 隔离状态写回；关联风险事件查询 events |
+| 工作空间 | 终端管理 | `endpoints` | `endpoint_uid` 为不可变 UUID 主键，`endpoint_code` 为原 EP 编码；隔离、策略、状态等写入独立字段；通过 UUID 外键关联 events / assets / watermarkImages |
 | 工作空间 | 水印追踪 | `dlp_records WHERE kind='watermarkImages'` | `dlp_watermark_images` 保存路径 / 哈希 / MIME / 大小；关联 endpoints / events / watermarks |
 | 数据安全 | 防护策略 | `dlp_records WHERE kind='policies'` | 创建、修改、启停、删除均写库；规则选项读取 rules |
 | 数据安全 | 数据发现 | `dlp_records WHERE kind IN ('assets','scans')` | 资产查询及统计、扫描任务配置 / 状态 / 进度均来自数据库 |
@@ -26,7 +26,8 @@
 ## 核对 SQL
 
 ```sql
-SELECT kind, count(*) FROM dlp_records GROUP BY kind ORDER BY kind;
+SELECT kind, count(*) FROM dlp_record_view GROUP BY kind ORDER BY kind;
+SELECT endpoint_uid, endpoint_code, name, ip_address, username, status, isolated FROM endpoints ORDER BY seq;
 SELECT id, data FROM dlp_records WHERE kind='watermarks' ORDER BY seq;
 SELECT data FROM dlp_settings WHERE id=1;
 SELECT category, key, label, config FROM dlp_catalogs ORDER BY category, position;
@@ -35,3 +36,28 @@ SELECT id, operator_name, action, target, created_at FROM operation_logs ORDER B
 ```
 
 列表和统计实现：`dlpcenter/services/Queries.cc`；配置与业务写入：`dlpcenter/controllers/DlpController.cc`；表结构和索引：`dlpcenter/sql/init.sql`。数据库通过初始化脚本导入演示数据，运行时不会用 `demo.json` 替代数据库查询。
+
+
+## 终端唯一标识与关联
+
+- `endpoints.endpoint_uid UUID PRIMARY KEY DEFAULT gen_random_uuid()`：数据库生成，终端改名、换 IP、修改使用人均不会改变。更新主键被数据库触发器拒绝。
+- `endpoint_code UNIQUE NOT NULL`：保留 `EP-0001` 等现有编号，作为显示与兼容编号，不作为新业务关联键；名称 / IP 不唯一，不用来维持关联。
+- 独立字段：`name`、`username`、`department`、`ip_address`、`os`、`status`、`risk`、`agent_version`、`policy`、`last_seen`、`isolated`、`created_at`、`updated_at`。`extra` 仅保存兼容的扩展属性，不保存上述字段副本。
+- `dlp_records.endpoint_uid UUID REFERENCES endpoints(endpoint_uid) ON UPDATE RESTRICT ON DELETE RESTRICT`：风险事件、数据资产、水印追踪以及有明确来源终端的外发申请通过此列关联。已关联终端不能被直接删除。未知来源允许 NULL，不能以 IP / 用户 / 部门猜测。
+- 历史 `endpoint`、`ip`、`endpointId` 是发生时的展示快照 / 兼容编码；`endpointUid` 是接口里的 UUID 字段，数据库触发器将它与外键列同步。业务关联只比较 UUID。
+- 现有审批记录没有终端来源，保留未关联；全局规则、部门范围策略、报告汇总、用户账号等没有单台终端语义，不强制绑定终端。
+- `endpoint_records` 为结构化终端投影，`dlp_record_view` 是只读兼容查询视图（通用业务记录 UNION ALL 终端投影），支持原列表 / 搜索 / 统计接口，不复制终端记录回 JSONB 表。
+
+```sql
+SELECT e.endpoint_uid,e.endpoint_code,e.name,r.kind,r.id
+FROM endpoints e JOIN dlp_records r ON r.endpoint_uid=e.endpoint_uid
+WHERE e.endpoint_code='EP-0001';
+
+SELECT kind,count(*) AS total,count(endpoint_uid) AS linked
+FROM dlp_records WHERE kind IN ('events','assets','approvals','watermarkImages') GROUP BY kind;
+
+SELECT kind,id,data->>'endpoint' AS recorded_name,data->>'ip' AS recorded_ip
+FROM dlp_records WHERE endpoint_uid IS NULL AND kind IN ('events','assets','approvals','watermarkImages');
+```
+
+首次初始化和 SQLite 导入包含终端迁移。已有 PostgreSQL 部署须停服执行 `python scripts/migrate_endpoints.py`，迁移与校验步骤见部署文档。不要再向 `dlp_records` 插入 kind=endpoints；数据库触发器会拒绝。

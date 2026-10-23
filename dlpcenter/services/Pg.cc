@@ -81,22 +81,43 @@ void Pg::commit() {
 }
 Json::Value Pg::items(const std::string &kind) {
     Json::Value a(Json::arrayValue);
-    auto r = query("SELECT data::text FROM dlp_records WHERE kind=$1 ORDER BY seq", {kind});
+    auto r = query("SELECT data::text FROM dlp_record_view WHERE kind=$1 ORDER BY seq", {kind});
     for (int i = 0; i < r.size(); i++)
         a.append(parse(r.get(i, "data")));
     return a;
 }
 Json::Value Pg::get(const std::string &kind, const std::string &id, bool lock) {
-    auto r = query("SELECT data::text FROM dlp_records WHERE kind=$1 AND id=$2" +
-                       std::string(lock ? " FOR UPDATE" : ""),
-                   {kind, id});
+    auto r =
+        kind == "endpoints"
+            ? query(
+                  "SELECT data::text FROM endpoint_records WHERE id=$1 OR data->>'endpointUid'=$1" +
+                      std::string(lock ? " FOR UPDATE" : ""),
+                  {id})
+            : query("SELECT data::text FROM dlp_records WHERE kind=$1 AND id=$2" +
+                        std::string(lock ? " FOR UPDATE" : ""),
+                    {kind, id});
     if (!r.size())
         return Json::Value();
     return parse(r.get(0, "data"));
 }
 void Pg::put(const std::string &kind, const Json::Value &item) {
+    if (kind == "endpoints") {
+        auto result =
+            query("UPDATE endpoints SET name=$2,username=$3,department=$4,ip_address=$5,"
+                  "os=$6,status=$7,risk=$8,agent_version=$9,policy=$10,last_seen=$11,isolated=$12::"
+                  "boolean "
+                  "WHERE endpoint_code=$1 AND endpoint_uid::text=$13",
+                  {item["id"].asString(), item["name"].asString(), item["user"].asString(),
+                   item["department"].asString(), item["ip"].asString(), item["os"].asString(),
+                   item["status"].asString(), item["risk"].asString(), item["version"].asString(),
+                   item["policy"].asString(), item["lastSeen"].asString(),
+                   item["isolated"].asBool() ? "true" : "false", item["endpointUid"].asString()});
+        if (!result.affected())
+            throw std::invalid_argument("终端不存在或唯一标识不一致");
+        return;
+    }
     query("INSERT INTO dlp_records(kind,id,data) VALUES($1,$2,$3::jsonb) ON CONFLICT(kind,id) DO "
-          "UPDATE SET data=EXCLUDED.data",
+          "UPDATE SET data=EXCLUDED.data,endpoint_uid=EXCLUDED.endpoint_uid",
           {kind, item["id"].asString(), dump(item)});
 }
 void Pg::audit(int actor, const std::string &action, const std::string &target,

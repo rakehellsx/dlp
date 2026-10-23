@@ -137,7 +137,7 @@ def main():
         note='合成测试样本，非真实泄漏证据。'+('已核验状态，用于关联终端与事件下钻。' if status=='reviewed' else '待核验状态，请尝试辅助识别并人工核验。')
         metadata={'type':kind,'status':status,'code':f'WM-DEMO-{index:03d}',
                   'user':endpoint.get('user',''),'department':endpoint.get('department',''),
-                  'endpoint':endpoint.get('name',''),'ip':endpoint.get('ip',''),
+                  'endpoint':endpoint.get('name',''),'endpointUid':endpoint.get('endpointUid',''),'ip':endpoint.get('ip',''),
                   'time':timestamp if kind!='unknown' else '', 'policyId':policy.get('id',''),
                   'content':content if status=='reviewed' else ''}
         result=api('watermark-images/import',{'filename':filename,'data':base64.b64encode(raw).decode(),

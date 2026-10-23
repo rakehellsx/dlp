@@ -89,6 +89,33 @@ def main():
             rejected=script('init_postgres.py',['--with-demo'],env=no_password,check=False)
             assert rejected.returncode and 'DLP_ADMIN_PASSWORD' in rejected.stderr
             script('init_postgres.py',['--with-demo']);script('init_postgres.py',['--with-demo'])
+            # Exercise a legacy PostgreSQL layout, including ambiguous and conflicting evidence.
+            legacy_endpoint_env=dict(environment,DLP_DB_NAME=database())
+            with connect_test(legacy_endpoint_env) as db,db.cursor() as c:
+                from psycopg2.extras import Json
+                c.execute((ROOT/'dlpcenter/sql/init.sql').read_text())
+                for code,name,ip in [('EP-A','shared','10.1.0.1'),('EP-B','shared','10.1.0.2'),('EP-C','unique','10.1.0.3')]:
+                    c.execute('INSERT INTO dlp_records(kind,id,data) VALUES(%s,%s,%s)',('endpoints',code,Json({'id':code,'name':name,'ip':ip,'custom':'preserved'})))
+                for ident,values in [('explicit',{'endpointId':'EP-A'}),('unique',{'endpoint':'unique'}),('ambiguous',{'endpoint':'shared'}),('conflicting',{'endpoint':'unique','ip':'10.1.0.1'}),('unknown',{'endpoint':'absent'}),('bad-code',{'endpointId':'EP-MISSING'})]:
+                    c.execute('INSERT INTO dlp_records(kind,id,data) VALUES(%s,%s,%s)',('events',ident,Json({'id':ident,**values})))
+            rejected=script('migrate_endpoints.py',env=legacy_endpoint_env,check=False)
+            assert rejected.returncode and 'Unknown legacy endpointId' in rejected.stderr
+            with connect_test(legacy_endpoint_env) as db,db.cursor() as c:
+                c.execute("SELECT count(*) FROM dlp_records WHERE kind='endpoints'");assert c.fetchone()[0]==3
+                c.execute("SELECT to_regclass('endpoints')");assert c.fetchone()[0] is None
+                c.execute("DELETE FROM dlp_records WHERE id='bad-code'")
+            script('migrate_endpoints.py',env=legacy_endpoint_env)
+            with connect_test(legacy_endpoint_env) as db,db.cursor() as c:
+                c.execute('SELECT endpoint_code,endpoint_uid::text FROM endpoints ORDER BY endpoint_code');identities=dict(c.fetchall())
+                c.execute("SELECT data FROM endpoint_records WHERE id='EP-C'");assert c.fetchone()[0]['custom']=='preserved'
+                c.execute("SELECT id,endpoint_uid::text FROM dlp_records ORDER BY id");links=dict(c.fetchall())
+                assert links['explicit']==identities['EP-A'] and links['unique']==identities['EP-C']
+                assert all(links[k] is None for k in ['ambiguous','conflicting','unknown'])
+            script('migrate_endpoints.py',env=legacy_endpoint_env)
+            with connect_test(legacy_endpoint_env) as db,db.cursor() as c:
+                c.execute('SELECT endpoint_code,endpoint_uid::text FROM endpoints ORDER BY endpoint_code');assert dict(c.fetchall())==identities
+            print('PASS endpoint migration rollback, stable UUIDs, unique/conflicting/ambiguous matching, unknown sources and custom-field preservation',flush=True)
+
             with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
             environment['DLP_HTTP_PORT']=str(port);environment['DLP_HTTP_HOST']='127.0.0.1';base=f'http://127.0.0.1:{port}'
             start()
@@ -102,6 +129,37 @@ def main():
             assert request('/api/user/profile',opener=anonymous,token=token)['id']==profile['id']
             data=state();assert len(data['events'])==186 and len(data['endpoints'])==128
             assert request('/health')['database']=='PostgreSQL'
+            import uuid
+            endpoint=data['endpoints'][0];uid=endpoint['endpointUid']
+            assert str(uuid.UUID(uid))==uid and len({e['endpointUid'] for e in data['endpoints']})==128
+            with connect_test(environment) as db,db.cursor() as c:
+                c.execute("SELECT count(*) FROM dlp_records WHERE kind='endpoints'");assert c.fetchone()[0]==0
+                c.execute('SELECT count(*) FROM endpoints');assert c.fetchone()[0]==128
+                c.execute("SELECT kind,count(*),count(endpoint_uid) FROM dlp_records WHERE kind IN ('events','assets') GROUP BY kind")
+                assert {k:(n,linked) for k,n,linked in c.fetchall()}=={'events':(186,186),'assets':(72,72)}
+            initial_detail=request('/api/detail?kind=endpoints&id='+uid)
+            initial_related=initial_detail['related']['eventCount'];assert initial_related>0
+            assert request('/api/query?kind=events&endpointUid='+uid)['total']==initial_related
+            request('/api/query?kind=events&endpointUid=invalid',ok=False)
+            for badsql,args in [
+                ('INSERT INTO endpoints(endpoint_code) VALUES(%s)',(endpoint['id'],)),
+                ('UPDATE endpoints SET endpoint_uid=%s WHERE endpoint_uid=%s',(str(uuid.uuid4()),uid)),
+                ('DELETE FROM endpoints WHERE endpoint_uid=%s',(uid,)),
+                ("UPDATE dlp_records SET endpoint_uid=%s WHERE kind='events' AND id=%s",(str(uuid.uuid4()),data['events'][0]['id'])),
+                ("INSERT INTO dlp_records(kind,id,data) VALUES('endpoints','FORBIDDEN','{}')",())]:
+                try:
+                    with connect_test(environment) as db,db.cursor() as c:c.execute(badsql,args)
+                    raise AssertionError('Database constraint accepted invalid data')
+                except psycopg2.Error:pass
+            with connect_test(environment) as db,db.cursor() as c:
+                c.execute("UPDATE endpoints SET name='renamed-device',ip_address='10.99.0.7' WHERE endpoint_uid=%s",(uid,))
+            renamed=request('/api/detail?kind=endpoints&id='+uid)
+            assert renamed['item']['name']=='renamed-device' and renamed['related']['eventCount']==initial_related
+            assert request('/api/query?kind=endpoints&q=10.99.0.7')['items'][0]['endpointUid']==uid
+            with connect_test(environment) as db,db.cursor() as c:
+                c.execute('UPDATE endpoints SET name=%s,ip_address=%s WHERE endpoint_uid=%s',(endpoint['name'],endpoint['ip'],uid))
+            print('PASS dedicated endpoint table, UUID search/detail/filter, SQL foreign keys, immutable identity, legacy code compatibility and rename/IP-stable relationships',flush=True)
+
             print('PASS PostgreSQL initialization, idempotent demo seed, imported login/profile, Bearer and HttpOnly cookie authentication',flush=True)
             boot=request('/api/bootstrap');assert 'events' not in boot and len(boot['options']['departments'])==6
             first=request('/api/query?kind=events&pageSize=7&page=1');second=request('/api/query?kind=events&pageSize=7&page=2')
@@ -263,7 +321,7 @@ def main():
                 image=request('/api/watermark-images/import',{'filename':'test.'+fmt.lower(),'data':base64.b64encode(out.getvalue()).decode()})
                 assert image['item']['format']==fmt
                 request('/api/watermark-images/delete',{'id':image['id']})
-            metadata={'title':'PG核验图','type':'screen','status':'reviewed','endpoint':ep['name'],'ip':ep['ip'],'user':ep['user'],'policyId':wm['id'],'time':'2026-10-23T02:30:00Z','content':'已核验水印'}
+            metadata={'title':'PG核验图','type':'screen','status':'reviewed','endpoint':ep['name'],'endpointUid':ep['endpointUid'],'ip':ep['ip'],'user':ep['user'],'policyId':wm['id'],'time':'2026-10-23T02:30:00Z','content':'已核验水印'}
             request('/api/watermark-images/save',{'id':image_id,'metadata':{**metadata,'ip':'999.1.1.1'}},ok=False)
             request('/api/watermark-images/save',{'id':image_id,'metadata':{**metadata,'policyId':'missing'}},ok=False)
             saved=request('/api/watermark-images/save',{'id':image_id,'metadata':metadata})['item'];assert saved['time']=='2026-10-23 10:30:00'
@@ -286,6 +344,24 @@ def main():
             persisted=state();assert persisted['settings']==saved_settings
             assert next(e for e in persisted['events'] if e['id']==event['id'])['note']=='PostgreSQL disposition'
             assert next(w for w in persisted['watermarkImages'] if w['id']==image_id)['content']=='已核验水印'
+            related=request('/api/detail?kind=watermarkImages&id='+image_id)
+            assert related['item']['endpointUid']==ep['endpointUid'] and related['related']['endpoint']['endpointUid']==ep['endpointUid']
+            assert request('/api/query?kind=watermarkImages&endpointUid='+ep['endpointUid'])['total']>=1
+            request('/api/watermark-images/save',{'id':image_id,'metadata':{**metadata,'endpointUid':str(uuid.uuid4())}},ok=False)
+            # Reusing the old name/IP on another device cannot steal the saved association.
+            with connect_test(environment) as db,db.cursor() as c:
+                c.execute("UPDATE endpoints SET name='renamed-after-watermark',ip_address='10.88.0.1' WHERE endpoint_uid=%s",(ep['endpointUid'],))
+                c.execute('INSERT INTO endpoints(endpoint_code,name,ip_address) VALUES(%s,%s,%s)',('EP-REUSED-IP',ep['name'],ep['ip']))
+            related=request('/api/detail?kind=watermarkImages&id='+image_id)
+            assert related['related']['endpoint']['endpointUid']==ep['endpointUid'] and related['related']['endpoint']['name']=='renamed-after-watermark'
+            with connect_test(environment) as db,db.cursor() as c:
+                c.execute("DELETE FROM endpoints WHERE endpoint_code='EP-REUSED-IP'")
+                c.execute('UPDATE endpoints SET name=%s,ip_address=%s WHERE endpoint_uid=%s',(ep['name'],ep['ip'],ep['endpointUid']))
+            request('/api/watermark-images/save',{'id':image_id,'metadata':{**metadata,'endpointUid':''}})
+            assert request('/api/detail?kind=watermarkImages&id='+image_id)['related'].get('endpoint') is None
+            request('/api/watermark-images/save',{'id':image_id,'metadata':metadata})
+            print('PASS explicit watermark UUID association, invalid references, unbinding and protection against reused hostname/IP',flush=True)
+
             assert request('/api/watermark-image/'+image_id)==original
             for kind,ident in [('watermarks',wm['id']),('policies',policy['id'])]:request('/api/delete',{'kind':kind,'id':ident})
             request('/api/watermark-images/delete',{'id':image_id});request('/api/watermark-image/'+image_id,ok=False)

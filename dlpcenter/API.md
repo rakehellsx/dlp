@@ -400,3 +400,14 @@ async function sha256Hex(text) {
 界面文案统一使用产品名称；`/health` 中运行模式为 `standalone`。旧部署可运行 `python scripts/update_product_copy.py` 清理内置水印记录标题和备注，脚本幂等，不修改上传图片、识别原文、关联信息或历史审计。
 
 历史系统初始化日志仅在界面上统一展示措辞，数据库审计原文及日志导出保持原样，便于追溯。用户上传图片、识别原文和用户输入内容不作全局字符串替换。
+
+
+## 终端 UUID（独立 endpoints 表）
+
+终端 JSON 增加只读 `endpointUid`（UUID）；`id` 继续返回原 `EP-0001` 编码，兼容现有链接。终端详情参数 `id` 接受 UUID 或 EP 编码，查询 / 搜索 / 统计均从独立终端表读取。`GET /api/query?kind=endpoints&q=<UUID>` 可按唯一标识搜索。
+
+所有终端相关业务支持 `GET /api/query?kind=events|assets|approvals|watermarkImages&endpointUid=<UUID>`，由数据库外键列筛选，UUID 无效会拒绝。详情返回 `related.endpoint`、同终端的 events / assets / approvals / watermarkImages（各前 5 条和总数）；终端改名、IP 复用不影响结果。
+
+`POST /api/watermark-images/save` 和 import 的 metadata 增加 `endpointUid`，空值表示未关联，非空须存在于终端表。名称与 IP 只作为图片信息保留，不会自动绑定终端。OCR 可建议 endpointUid，但须核验并保存后生效。前端核验界面支持从分页数据库查询结果选择终端。
+
+UUID 不可通过通用 update 修改；终端 update 仍只接受 isolated / policy。设备主键不可变、外键必须有效、有业务关联的设备不可直接删除，均由 PostgreSQL 约束。数据结构见 `sql/endpoints.sql`，升级工具见 `scripts/migrate_endpoints.py`。

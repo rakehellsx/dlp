@@ -93,11 +93,12 @@ export function createWatermarkImageModule(h) {
       <div class="form-group" style="margin-top:19px"><label>图片中的水印文字</label><textarea name="content" maxlength="4000" placeholder="可填写或粘贴图片中可见的水印内容">${esc(w.content)}</textarea></div>
       <div class="form-grid">${field('水印编号 / 标识',`<input name="code" value="${esc(w.code)}" maxlength="128" placeholder="可选">`)}${field('用户姓名',`<input name="user" value="${esc(w.user)}" maxlength="80" placeholder="例如：张明">`)}</div>
       <div class="form-grid" style="margin-top:19px">${field('所属部门',`<input name="department" value="${esc(w.department)}" maxlength="80">`)}${field('终端名称',`<input name="endpoint" value="${esc(w.endpoint)}" maxlength="120" placeholder="例如：RD-DESKTOP-001">`)}</div>
+      <div class="form-group" style="margin-top:19px"><label>关联终端唯一标识</label><input name="endpointUid" value="${esc(w.endpointUid||'')}" maxlength="36" placeholder="终端 UUID，可从终端详情复制；留空表示未关联"><div class="flex" style="margin-top:8px"><input id="wi-endpoint-search" placeholder="按终端名称、IP、编号或 UUID 搜索" aria-label="搜索关联终端">${btn('查找终端','wi-endpoint-search','search','','type="button"')}</div><div id="wi-endpoint-results" class="wi-assist-note" aria-live="polite"></div><small>只通过唯一标识关联终端；名称和 IP 为图片中的历史信息，清空唯一标识可解除关联。</small></div>
       <div class="form-grid" style="margin-top:19px">${field('终端 IP',`<input name="ip" value="${esc(w.ip)}" maxlength="45" placeholder="例如：192.168.10.20">`)}${field('水印时间',`<input name="time" type="datetime-local" step="1" value="${esc(w.time?.replace(' ','T')||'')}">`)}</div>
       <div class="form-group" style="margin-top:19px"><label>关联水印策略</label><select name="policyId">${opts(s.watermarkOptions.map(p=>[p.id,p.name]),w.policyId,'未关联策略')}</select></div>
       ${field('核验备注',`<textarea name="note" maxlength="1000" placeholder="记录图片来源、核验依据或发现事项">${esc(w.note)}</textarea>`)}
       </form></section>
-      <section class="detail-section"><h3>已保存的关联关系</h3>${ep?`<div class="wi-related"><div>${icon('monitor')}<strong>${esc(ep.name)}</strong><small>${esc(ep.user)} · ${esc(ep.department)} · ${ep.ip}</small></div>${link('查看终端','endpoint-detail',`data-id="${ep.id}"`)}</div>`:'<p class="wi-assist-note">尚未匹配纳管终端。填写准确的终端名称或 IP 并保存后，可查看关联终端与风险事件。</p>'}
+      <section class="detail-section"><h3>已保存的关联关系</h3>${ep?`<div class="wi-related"><div>${icon('monitor')}<strong>${esc(ep.name)}</strong><small>${esc(ep.user)} · ${esc(ep.department)} · ${ep.ip}</small><small class="mono">${esc(ep.endpointUid)}</small></div>${link('查看终端','endpoint-detail',`data-id="${ep.id}"`)}</div>`:'<p class="wi-assist-note">尚未关联纳管终端。查找并选择终端，保存唯一标识后可查看关联终端与风险事件。</p>'}
       ${policy?`<div class="wi-related"><div>${icon('layers')}<strong>${esc(policy.name)}</strong><small>${typeNames[policy.type]}</small></div>${link('策略预览','watermark-preview',`data-id="${policy.id}"`)}</div>`:''}
       ${events.map(e=>`<div class="wi-related"><div>${icon('alert')}<strong>${esc(e.title)}</strong><small>${e.time} · ${esc(e.file)}</small></div>${link('查看事件','event-detail',`data-id="${e.id}"`)}</div>`).join('')}</section>
       <section class="detail-section"><h3>原图信息</h3><div class="detail-grid">${[['文件名',w.filename],['导入时间',w.importedAt],['导入人',w.actor],['相机 / 设备',w.camera||'无 EXIF 设备信息'],['EXIF 拍摄时间',w.capturedAt||'未包含'],['信息更新时间',w.updated]].map(([k,v])=>`<div><span class="detail-label">${k}</span><span class="detail-value">${esc(v)}</span></div>`).join('')}</div><p class="wi-hash"><span>原图 SHA-256</span>${w.hash}</p><p class="wi-assist-note">EXIF 为原图自带信息，关联字段为辅助识别建议或人工核验记录，不作为身份真实性证明。</p></section>`,
@@ -146,7 +147,24 @@ export function createWatermarkImageModule(h) {
     document.querySelector('#wi-zoom-label').textContent=Math.round(scale*100)+'%';
   }
 
+  let endpointSearchVersion=0;
+  async function searchEndpoint() {
+    const target=document.querySelector('#wi-endpoint-results');
+    const input=document.querySelector('#wi-endpoint-search');
+    const version=++endpointSearchVersion;
+    target.textContent='正在查询…';
+    const result=await api('query?'+new URLSearchParams({kind:'endpoints',q:input.value.trim(),pageSize:'20'}));
+    if(version!==endpointSearchVersion||!target.isConnected)return;
+    target.innerHTML=result.items.length?result.items.map(ep=>`<div style="margin-top:10px"><button type="button" class="link" data-action="wi-endpoint-select" data-uid="${esc(ep.endpointUid)}">选择 ${esc(ep.name)}</button><span class="mono"> ${esc(ep.ip)} · ${esc(ep.id)}</span><div class="mono">${esc(ep.endpointUid)}</div></div>`).join('')+`<p>找到 ${result.total} 台终端${result.total>20?'，请细化关键词以缩小结果范围':''}</p>`:'未找到终端，请调整搜索条件';
+  }
+  document.addEventListener('keydown',ev=>{if(ev.target.id==='wi-endpoint-search'&&ev.key==='Enter'){ev.preventDefault();searchEndpoint().catch(e=>toast(e.message,true));}});
   async function action(a,d) {
+    if(a==='wi-endpoint-search'){await searchEndpoint();return;}
+    if(a==='wi-endpoint-select'){
+      const form=document.querySelector('#wi-metadata-form');
+      if(form){form.elements.endpointUid.value=d.uid;document.querySelector('#wi-endpoint-results').textContent='已选择终端，请保存核验信息以更新关联。';}
+      return;
+    }
     if(a==='wi-import')importForm();
     else if(a==='wi-pick')document.querySelector('#wi-files')?.click();
     else if(a==='wi-remove'){if(uploading)return;files.splice(Number(d.index),1);renderFiles();}

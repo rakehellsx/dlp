@@ -50,6 +50,8 @@ std::string csvCell(std::string s) {
     return escaped + '"';
 }
 void policyExists(Pg &db, const Json::Value &metadata) {
+    auto uid = metadata.get("endpointUid", "").asString();
+    require(uid.empty() || !db.get("endpoints", uid).isNull(), "关联终端不存在，请重新选择");
     auto id = metadata["policyId"].asString();
     require(id.empty() || !db.get("watermarks", id).isNull(), "关联水印策略不存在，请重新选择");
 }
@@ -261,15 +263,17 @@ HttpResponsePtr dispatch(const HttpRequestPtr &req, const std::string &imageId) 
             extracted = imageWorker(work);
             auto content = extracted["text"].asString(),
                  address = extracted["suggestions"].get("ip", "").asString();
-            auto endpoints = db.query(
-                "SELECT data::text FROM dlp_records WHERE kind='endpoints' AND (($1<>'' AND "
-                "data->>'ip'=$1) OR strpos(lower($2),lower(data->>'name'))>0) ORDER BY seq LIMIT 1",
-                {address, content});
-            if (endpoints.size()) {
+            auto endpoints =
+                db.query("SELECT data::text FROM endpoint_records WHERE true AND (($1<>'' AND "
+                         "data->>'ip'=$1) OR (data->>'name'<>'' AND "
+                         "strpos(lower($2),lower(data->>'name'))>0)) ORDER BY seq LIMIT 2",
+                         {address, content});
+            if (endpoints.size() == 1) {
                 auto ep = parse(endpoints.get(0, "data"));
                 for (auto key : {"user", "department", "ip"})
                     extracted["suggestions"][key] = ep[key];
                 extracted["suggestions"]["endpoint"] = ep["name"];
+                extracted["suggestions"]["endpointUid"] = ep["endpointUid"];
             }
             auto policies = db.query(
                 "SELECT data::text FROM dlp_records WHERE kind='watermarks' AND "
@@ -307,6 +311,9 @@ HttpResponsePtr dispatch(const HttpRequestPtr &req, const std::string &imageId) 
         require(path == "/api/watermark-images/save", "接口不存在");
         auto meta = metadata(payload["metadata"]);
         policyExists(db, meta);
+        if (!meta["endpointUid"].asString().empty())
+            require(!db.get("endpoints", meta["endpointUid"].asString()).isNull(),
+                    "关联终端不存在，请重新选择");
         merge(item, meta);
         item["updated"] = now();
         db.put("watermarkImages", item);

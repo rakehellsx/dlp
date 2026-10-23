@@ -12,6 +12,7 @@ import bcrypt
 import psycopg2
 from psycopg2.extras import Json
 from pg_common import connect, schema
+from migrate_endpoints import migrate
 
 MARKER='sqlite-prototype-v1'
 
@@ -36,6 +37,10 @@ def main():
                 if c.fetchone():print('已完成过 SQLite 迁移，跳过，不覆盖 PostgreSQL 后续修改');return
                 c.execute('SELECT count(*) FROM dlp_records')
                 if c.fetchone()[0]:raise SystemExit('目标业务库非空，已取消迁移，避免覆盖已有数据')
+                c.execute("SELECT to_regclass('public.endpoints')")
+                if c.fetchone()[0]:
+                    c.execute('SELECT 1 FROM endpoints LIMIT 1')
+                    if c.fetchone():raise SystemExit('目标终端表非空，已取消迁移，避免覆盖已有数据')
                 users=list(source.execute('SELECT * FROM users'))
                 for user in users:
                     c.execute('SELECT id FROM users WHERE username=%s',(user['name'],))
@@ -67,6 +72,7 @@ def main():
                 for image in images:
                     actual=result[image['id']]
                     if bytes(actual[0])!=image['original'] or bytes(actual[1])!=image['thumbnail'] or actual[2]!=image['hash']:raise SystemExit('图片数据对比失败，迁移已回滚')
+                migrate(c)
                 print(f'迁移完成：{len(records)} 条业务记录，{len(images)} 张图片；JSON、原图和缩略图逐条核对通过。旧会话不迁移，请重新登录。')
     finally:source.close()
 

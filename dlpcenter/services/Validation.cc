@@ -130,6 +130,7 @@ Json::Value metadata(const Json::Value &v) {
                                                                      {"user", 80},
                                                                      {"department", 80},
                                                                      {"endpoint", 120},
+                                                                     {"endpointUid", 36},
                                                                      {"ip", 45},
                                                                      {"time", 40},
                                                                      {"policyId", 80},
@@ -137,6 +138,11 @@ Json::Value metadata(const Json::Value &v) {
                                                                      {"note", 1000}})
         r[pair.first] = text(v, pair.first, "", pair.second);
     require(!r["title"].asString().empty(), "请填写图片标题");
+    auto uid = r["endpointUid"].asString();
+    require(
+        uid.empty() ||
+            std::regex_match(uid, std::regex("[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")),
+        "终端唯一标识格式无效");
     r["type"] = option(v, "type", "unknown", {"unknown", "print", "screen", "screenshot"});
     r["status"] = option(v, "status", "pending", {"pending", "reviewed"});
     if (!r["ip"].asString().empty()) {
