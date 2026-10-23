@@ -96,3 +96,5 @@ $env:DLP_BINARY = (Resolve-Path dlpcenter/build/Release/dlpcenter.exe).Path
 ```
 
 CI 使用 `x64-windows-release` triplet 只编译 Release 依赖，并缓存已编译的依赖；本地上述 `x64-windows` 同时支持 Debug / Release。GitHub Actions 的 `Windows and Linux` 工作流在 windows-2022 和 ubuntu-24.04 分别构建，创建独立 PostgreSQL 集群并执行 CTest / 完整接口集成测试；Windows 无 Tesseract 时按能力跳过 OCR，其他图片及用户管理接口仍进行测试。
+
+验证环境：Windows Server 2022 / MSVC 14.44 / Drogon 1.9.13 / PostgreSQL 14；Ubuntu 24.04 / GCC 13 / Drogon 1.8.7 / PostgreSQL 16。原生构建、平台测试和 PostgreSQL 接口集成测试由 [GitHub Actions](https://github.com/rakehellsx/dlp/actions/workflows/build.yml) 执行。Windows 测试同时检查临时 SQLite 迁移样本的连接关闭与文件清理。

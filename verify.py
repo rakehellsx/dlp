@@ -237,6 +237,7 @@ def main():
                 c.execute('INSERT INTO watermark_images VALUES(?,?,?,?,?)',('WIMG-0123456789AB',original,original,hashlib.sha256(original).hexdigest(),'image/png'))
                 c.execute("INSERT INTO migrations VALUES('watermarks-v1')")
                 c.execute('INSERT INTO audit VALUES(1,?,?,?,?,?)',('2026-10-23 10:30:00','旧管理员','旧操作','旧目标','旧记录'))
+            c.close()  # SQLite's transaction context does not close the Windows file handle.
             migration_env=dict(environment,DLP_DB_NAME=database(),DLP_FILE_ROOT=str(Path(tmp)/'migrated-files'))
             migrated=script('migrate_sqlite_to_postgres.py',['--sqlite',str(legacy)],env=migration_env)
             repeated=script('migrate_sqlite_to_postgres.py',['--sqlite',str(legacy)],env=migration_env)
