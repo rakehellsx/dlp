@@ -30,7 +30,7 @@ cmake --build dlpcenter/build --config Release --parallel 2
 ctest --test-dir dlpcenter/build -C Release --output-on-failure
 ```
 
-生成 `dlpcenter/build/Release/dlpcenter.exe`。vcpkg 自动拷贝依赖 DLL 至可执行文件目录；发布时须同时携带该目录里的 DLL。若工具未自动拷贝，可将 `dlpcenter/build/vcpkg_installed/x64-windows/bin` 加入 PATH。CMake 为 MSVC 开启 UTF-8 源码 / 执行字符集，Windows API 使用 UTF-16 路径，支持包含空格和中文的图片处理路径。
+生成 `dlpcenter/build/Release/dlpcenter.exe`。vcpkg 自动拷贝依赖 DLL 至可执行文件目录；发布时须同时携带该目录里的 DLL。若工具未自动拷贝，可将 `dlpcenter/build/vcpkg_installed/x64-windows/bin` 加入 PATH。CMake 将 Windows SDK 目标设为 Windows 10（含 Drogon ORM 所需 htonll），为 MSVC 开启 UTF-8 源码 / 执行字符集，Windows API 使用 UTF-16 路径，支持包含空格和中文的图片处理路径。
 
 ## PostgreSQL 初始化与启动
 
@@ -95,4 +95,4 @@ $env:DLP_BINARY = (Resolve-Path dlpcenter/build/Release/dlpcenter.exe).Path
 & $env:DLP_PYTHON verify.py
 ```
 
-GitHub Actions 的 `Windows and Linux` 工作流在 windows-2022 和 ubuntu-24.04 分别构建，创建独立 PostgreSQL 集群并执行 CTest / 完整接口集成测试；Windows 无 Tesseract 时按能力跳过 OCR，其他图片及用户管理接口仍进行测试。
+CI 使用 `x64-windows-release` triplet 只编译 Release 依赖，并缓存已编译的依赖；本地上述 `x64-windows` 同时支持 Debug / Release。GitHub Actions 的 `Windows and Linux` 工作流在 windows-2022 和 ubuntu-24.04 分别构建，创建独立 PostgreSQL 集群并执行 CTest / 完整接口集成测试；Windows 无 Tesseract 时按能力跳过 OCR，其他图片及用户管理接口仍进行测试。

@@ -20,6 +20,7 @@ jobs:
       DLP_DB_PORT: '55432'
       DLP_DB_USER: postgres
       DLP_DB_NAME: postgres
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-archives
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -52,10 +53,19 @@ jobs:
       - name: Configure Linux
         if: runner.os == 'Linux'
         run: cmake -S dlpcenter -B dlpcenter/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+      - name: Restore Windows dependency cache
+        id: vcpkg-cache
+        if: runner.os == 'Windows'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-archives
+          key: windows-vcpkg-${{ hashFiles('dlpcenter/vcpkg.json', 'dlpcenter/triplets/*.cmake') }}
       - name: Configure Windows with pinned vcpkg manifest
+        id: vcpkg
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           $baseline = (Get-Content dlpcenter/vcpkg.json | ConvertFrom-Json).'builtin-baseline'
           git -C $env:VCPKG_INSTALLATION_ROOT fetch origin $baseline --depth 1
           if ($LASTEXITCODE) { throw 'vcpkg baseline fetch failed' }
@@ -63,11 +73,19 @@ jobs:
           if ($LASTEXITCODE) { throw 'vcpkg baseline checkout failed' }
           & "$env:VCPKG_INSTALLATION_ROOT/bootstrap-vcpkg.bat" -disableMetrics
           if ($LASTEXITCODE) { throw 'vcpkg bootstrap failed' }
-          cmake -S dlpcenter -B dlpcenter/build -A x64 -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DBUILD_TESTING=ON
+          cmake -S dlpcenter -B dlpcenter/build -A x64 -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-release "-DVCPKG_OVERLAY_TRIPLETS=$pwd/dlpcenter/triplets" -DBUILD_TESTING=ON
           if ($LASTEXITCODE) { throw 'CMake configure failed' }
+      - name: Save Windows dependency cache
+        if: always() && runner.os == 'Windows' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-archives
+          key: windows-vcpkg-${{ hashFiles('dlpcenter/vcpkg.json', 'dlpcenter/triplets/*.cmake') }}
       - name: Build
+        id: build
         run: cmake --build dlpcenter/build --config Release --parallel 2
       - name: Platform tests
+        if: ${{ !cancelled() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure') }}
         shell: pwsh
         run: |
           $env:DLP_PYTHON = (Get-Command python).Source
