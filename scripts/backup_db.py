@@ -1,9 +1,11 @@
-"""Create a PostgreSQL custom-format backup, including BYTEA watermark images."""
+"""Create a PostgreSQL custom-format backup, paired with an archive of immutable disk files."""
 import argparse
 from datetime import datetime
 import os
 from pathlib import Path
 import subprocess
+import tarfile
+import re
 
 
 def main():
@@ -20,6 +22,12 @@ def main():
         subprocess.run(['pg_restore','--list',str(path)],stdout=subprocess.DEVNULL,check=True)
     except Exception:
         path.unlink(missing_ok=True);raise
+    files=path.with_suffix('.files.tar.gz')
+    root=Path(os.environ.get('DLP_FILE_ROOT','/var/lib/sentinel-dlp/files'))
+    fd=os.open(files,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+    with os.fdopen(fd,'wb') as output:
+        with tarfile.open(fileobj=output,mode='w:gz') as archive:
+            if root.is_dir():archive.add(root,arcname='files',filter=lambda item:item if re.fullmatch(r'files(?:/[a-f0-9]{64}(?:/(?:original|thumbnail\.jpg))?)?',item.name) and (item.isdir() or item.isfile()) else None)
     print(path.resolve())
 
 

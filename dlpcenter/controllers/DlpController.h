@@ -6,6 +6,11 @@ class DlpController : public drogon::HttpController<DlpController> {
     ADD_METHOD_TO(DlpController::handle, "/health", drogon::Get);
     ADD_METHOD_TO(DlpController::handle, "/api/bootstrap", drogon::Get, "AuthFilter");
     ADD_METHOD_TO(DlpController::handle, "/api/export", drogon::Get, "AuthFilter");
+    ADD_METHOD_TO(DlpController::handle, "/api/query", drogon::Get, "AuthFilter");
+    ADD_METHOD_TO(DlpController::handle, "/api/statistics", drogon::Get, "AuthFilter");
+    ADD_METHOD_TO(DlpController::handle, "/api/search", drogon::Get, "AuthFilter");
+    ADD_METHOD_TO(DlpController::handle, "/api/detail", drogon::Get, "AuthFilter");
+
     ADD_METHOD_TO(DlpController::image, "/api/watermark-image/{1}", drogon::Get, "AuthFilter");
     ADD_METHOD_TO(DlpController::handle, "/api/save", drogon::Post, "AdminFilter");
     ADD_METHOD_TO(DlpController::handle, "/api/update", drogon::Post, "AdminFilter");

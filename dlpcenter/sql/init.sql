@@ -59,3 +59,32 @@ CREATE TABLE IF NOT EXISTS dlp_watermark_images (
     mime TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS dlp_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());
+
+-- Business option catalogs are queried from PostgreSQL, not maintained by browser arrays.
+CREATE TABLE IF NOT EXISTS dlp_catalogs (
+ category TEXT NOT NULL, key TEXT NOT NULL, label TEXT NOT NULL,
+ position INTEGER NOT NULL DEFAULT 0, config JSONB NOT NULL DEFAULT '{}',
+ PRIMARY KEY(category,key)
+);
+INSERT INTO dlp_catalogs(category,key,label,position) VALUES
+ ('department','rd','研发中心',1),('department','marketing','市场营销部',2),
+ ('department','finance','财务部',3),('department','hr','人力资源部',4),
+ ('department','design','产品设计部',5),('department','admin','行政管理部',6)
+ ON CONFLICT DO NOTHING;
+INSERT INTO dlp_catalogs(category,key,label,position,config) VALUES
+ ('channel','im','即时通讯',1,'{"icon":"message"}'),('channel','usb','USB 外设',2,'{"icon":"usb"}'),
+ ('channel','web','浏览器上传',3,'{"icon":"globe"}'),('channel','mail','电子邮件',4,'{"icon":"mail"}'),
+ ('channel','print','打印输出',5,'{"icon":"printer"}'),('channel','clipboard','剪贴板',6,'{"icon":"clipboard"}')
+ ON CONFLICT DO NOTHING;
+CREATE INDEX IF NOT EXISTS idx_records_search ON dlp_records USING gin(data jsonb_path_ops);
+CREATE INDEX IF NOT EXISTS idx_records_status ON dlp_records(kind,(data->>'status'));
+CREATE INDEX IF NOT EXISTS idx_records_department ON dlp_records(kind,(data->>'department'));
+CREATE INDEX IF NOT EXISTS idx_records_endpoint ON dlp_records(kind,(data->>'endpointId'));
+CREATE INDEX IF NOT EXISTS idx_records_time ON dlp_records(kind,(data->>'time'));
+
+-- File bytes live on disk. Keep nullable legacy columns only for an explicit upgrade.
+ALTER TABLE dlp_watermark_images ALTER COLUMN original DROP NOT NULL;
+ALTER TABLE dlp_watermark_images ALTER COLUMN thumbnail DROP NOT NULL;
+ALTER TABLE dlp_watermark_images ADD COLUMN IF NOT EXISTS original_path TEXT;
+ALTER TABLE dlp_watermark_images ADD COLUMN IF NOT EXISTS thumbnail_path TEXT;
+ALTER TABLE dlp_watermark_images ADD COLUMN IF NOT EXISTS size BIGINT NOT NULL DEFAULT 0;

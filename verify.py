@@ -17,7 +17,9 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import tarfile
 import time
+import urllib.parse
 import urllib.error
 import urllib.request
 
@@ -30,12 +32,15 @@ sys.path.insert(0,str(ROOT/'scripts'))
 from pg_common import connect
 
 
+def connect_test(env):
+    return psycopg2.connect(host=env.get('DLP_DB_HOST','127.0.0.1'),port=env.get('DLP_DB_PORT','5432'),user=env.get('DLP_DB_USER','dlpcenter'),password=env.get('DLP_DB_PASSWORD',''),dbname=env['DLP_DB_NAME'],options='-c timezone=Asia/Shanghai')
+
 def main():
     admin=connect();admin.autocommit=True
     databases=[];process=None
     with tempfile.TemporaryDirectory(prefix='dlpcenter-verify-') as tmp:
         environment=dict(os.environ,DLP_ADMIN_PASSWORD='Integration-Only-Password!',TZ='Asia/Shanghai',
-            DLP_IMAGE_HELPER=str(ROOT/'dlpcenter/tools/image_processor.py'),DLP_CONFIG=str(ROOT/'dlpcenter/config.json'),DLP_STATIC_ROOT=str(ROOT/'static'))
+            DLP_FILE_ROOT=str(Path(tmp)/'files'),DLP_IMAGE_HELPER=str(ROOT/'dlpcenter/tools/image_processor.py'),DLP_CONFIG=str(ROOT/'dlpcenter/config.json'),DLP_STATIC_ROOT=str(ROOT/'static'))
         def database():
             name='dlp_verify_'+secrets.token_hex(5)
             with admin.cursor() as c:c.execute(sql.SQL('CREATE DATABASE {}').format(sql.Identifier(name)))
@@ -64,6 +69,17 @@ def main():
                 result=json.loads(raw);assert (result.get('code')==0)==ok,(path,result)
                 assert response.headers.get('X-Err-Code')==str(result['code'])
                 return result
+        def state():
+            result=request('/api/bootstrap')
+            for kind in ['events','endpoints','policies','rules','assets','approvals','scans','reports','watermarks','watermarkImages']:
+                found=[];page=1
+                while True:
+                    response=request('/api/query?'+urllib.parse.urlencode({'kind':kind,'pageSize':100,'page':page}))
+                    found.extend(response['items'])
+                    if len(found)>=response['total']:break
+                    page+=1
+                result[kind]=found
+            return result
         def login(password='Integration-Only-Password!',username='admin',opener=None,ok=True):
             return request('/api/login',{'username':username,'password_hash':hashlib.sha256(password.encode()).hexdigest()},opener=opener,ok=ok)
         log=Path(tmp,'server.log').open('w')
@@ -84,9 +100,39 @@ def main():
             logged=login();token=logged['token'];assert len(token)==64
             profile=request('/api/user/profile');assert profile['username']=='admin' and profile['role']=='admin'
             assert request('/api/user/profile',opener=anonymous,token=token)['id']==profile['id']
-            data=request('/api/bootstrap');assert len(data['events'])==186 and len(data['endpoints'])==128
+            data=state();assert len(data['events'])==186 and len(data['endpoints'])==128
             assert request('/health')['database']=='PostgreSQL'
             print('PASS PostgreSQL initialization, idempotent demo seed, imported login/profile, Bearer and HttpOnly cookie authentication',flush=True)
+            boot=request('/api/bootstrap');assert 'events' not in boot and len(boot['options']['departments'])==6
+            first=request('/api/query?kind=events&pageSize=7&page=1');second=request('/api/query?kind=events&pageSize=7&page=2')
+            assert first['total']==186 and len(first['items'])==7 and not {r['id'] for r in first['items']}&{r['id'] for r in second['items']}
+            for filters in [{'q':data['events'][0]['user']},{'department':'研发中心','status':'pending'},{'severity':'high','channel':'即时通讯'}]:
+                actual=request('/api/query?'+urllib.parse.urlencode(dict(kind='events',pageSize=100,**filters)))
+                matching=[r for r in data['events'] if all((value in ' '.join(str(r.get(k,'')) for k in ['id','title','file','user','endpoint','ip','department'])) if key=='q' else r.get(key)==value for key,value in filters.items())]
+                assert actual['total']==len(matching) and {r['id'] for r in actual['items']}=={r['id'] for r in matching}
+            for bad in ['kind=events&page=0','kind=events&pageSize=10000','kind=events&sort=bad','kind=missing']:
+                request('/api/query?'+bad,ok=False)
+            assert request('/api/query?'+urllib.parse.urlencode({'kind':'events','q':"' OR 1=1 --"}))['total']==0
+            request('/api/statistics?period=2',ok=False)
+            # Direct SQL changes must appear immediately in every endpoint, without a restart or browser cache refresh.
+            from psycopg2.extras import Json
+            injected={**data['events'][0],'id':'DB-ONLY-5001','title':'SQL_LIVE_百分号%下划线_','status':'pending','severity':'high','time':time.strftime('%Y-%m-%d %H:%M:%S')}
+            with connect_test(environment) as db:
+                with db.cursor() as c:c.execute('INSERT INTO dlp_records(kind,id,data) VALUES(%s,%s,%s)',('events',injected['id'],Json(injected)))
+            try:
+                queried=request('/api/query?'+urllib.parse.urlencode({'kind':'events','q':'SQL_LIVE_百分号%下划线_'}));assert queried['total']==1 and queried['items'][0]['id']==injected['id']
+                assert request('/api/search?'+urllib.parse.urlencode({'q':'SQL_LIVE_百分号%下划线_'}))['items'][0]['id']==injected['id']
+                assert request('/api/detail?kind=events&id='+injected['id'])['item']['title']==injected['title']
+                stats=request('/api/statistics?period=30');assert stats['counts']['events']==187
+                assert sum(r['all'] for r in stats['trend'])>0
+                assert stats['navigation']['pendingEvents']==sum(r['status']=='pending' for r in data['events'])+1
+                assert injected['id'].encode() in request('/api/export?'+urllib.parse.urlencode({'kind':'events','q':'SQL_LIVE_百分号%下划线_'}))
+                endpoint=request('/api/detail?kind=endpoints&id='+injected['endpointId']);assert endpoint['related']['eventCount']>=1
+            finally:
+                with connect_test(environment) as db:
+                    with db.cursor() as c:c.execute("DELETE FROM dlp_records WHERE kind='events' AND id=%s",(injected['id'],))
+            print('PASS SQL filtering, server pagination, literal wildcard/injection safety, live DB search/detail/aggregate/export and relationships',flush=True)
+
 
             request('/api/user/create',{'username':{},'password_hash':[]},ok=False)
             request('/api/user/disable',{'username':'admin','disabled':'true'},ok=False)
@@ -128,7 +174,10 @@ def main():
             request('/api/scan',{'name':'重复扫描','scope':'研发中心'},ok=False)
             report=request('/api/report',{'name':'PG report','period':'最近7天'})['item'];assert report['events']>0 and report['assets']==72
             export=request('/api/export?kind=events');assert export.startswith(b'\xef\xbb\xbf') and event['id'].encode() in export
-            request('/api/settings',{'company':'PostgreSQL 测试企业','retention':365})
+            request('/api/settings',{'company':'PostgreSQL 测试企业','retention':365,'email':'pg@example.test','offlineProtection':False,'autoUpdate':False,'notification':False})
+            saved_settings=request('/api/bootstrap')['settings'];assert saved_settings['retention']==365 and saved_settings['email']=='pg@example.test' and not saved_settings['offlineProtection'] and not saved_settings['autoUpdate'] and not saved_settings['notification']
+            with connect_test(environment) as db:
+                with db.cursor() as c:c.execute('SELECT data FROM dlp_settings WHERE id=1');assert c.fetchone()[0]==saved_settings
             request('/api/settings',{'retention':1},ok=False)
             print('PASS policies/rules/watermarks, event disposition, isolation, concurrent approval, scanning, detection, reports, CSV and settings',flush=True)
 
@@ -154,21 +203,22 @@ def main():
             saved=request('/api/watermark-images/save',{'id':image_id,'metadata':metadata})['item'];assert saved['time']=='2026-10-23 10:30:00'
             if data['imageCapabilities']['ocr']:
                 recognized=request('/api/watermark-images/ocr',{'id':image_id});assert recognized['item']['content']=='已核验水印'
-            print('PASS PNG/JPEG/WEBP BYTEA originals/thumbnails, authentication, deduplication, rejection, metadata, UTC conversion and OCR',flush=True)
+            print('PASS PNG/JPEG/WEBP disk originals/thumbnails with PG metadata, authentication, deduplication, rejection, metadata, UTC conversion and OCR',flush=True)
 
             backup=script('backup_db.py',['--output-dir',str(Path(tmp)/'backups')]).stdout.strip()
             assert Path(backup).stat().st_mode&0o777==0o600
-            restored=database()
-            restore_env=dict(environment,PGHOST=environment.get('DLP_DB_HOST','127.0.0.1'),PGPORT=environment.get('DLP_DB_PORT','5432'),
-                PGUSER=environment.get('DLP_DB_USER','dlpcenter'),PGPASSWORD=environment.get('DLP_DB_PASSWORD',''))
-            subprocess.run(['pg_restore','--no-owner','--no-acl','--exit-on-error','--dbname',restored,backup],env=restore_env,check=True,capture_output=True,timeout=30)
-            with psycopg2.connect(host=restore_env['PGHOST'],port=restore_env['PGPORT'],user=restore_env['PGUSER'],password=restore_env['PGPASSWORD'],dbname=restored) as restored_db:
+            restored=database();restored_root=Path(tmp)/'restored-files'
+            restored_env=dict(environment,DLP_DB_NAME=restored,DLP_FILE_ROOT=str(restored_root))
+            script('restore_backup.py',['--dump',backup],env=restored_env)
+            with connect_test(restored_env) as restored_db:
                 with restored_db.cursor() as c:
-                    c.execute('SELECT original FROM dlp_watermark_images WHERE id=%s',(image_id,));assert bytes(c.fetchone()[0])==original
+                    c.execute('SELECT original_path,original FROM dlp_watermark_images WHERE id=%s',(image_id,));image_path,blob=c.fetchone();assert blob is None and (restored_root/image_path).read_bytes()==original
                     c.execute("SELECT data FROM dlp_records WHERE kind='watermarkImages' AND id=%s",(image_id,));assert c.fetchone()[0]['content']=='已核验水印'
-            print('PASS pg_restore into a separate database, including original bytes and metadata',flush=True)
+            assert script('restore_backup.py',['--dump',backup],env=restored_env,check=False).returncode
+            print('PASS restore into an empty database with paired disk files, SHA integrity and overwrite refusal',flush=True)
             process.terminate();process.wait(timeout=10);start()
-            persisted=request('/api/bootstrap');assert next(e for e in persisted['events'] if e['id']==event['id'])['note']=='PostgreSQL disposition'
+            persisted=state();assert persisted['settings']==saved_settings
+            assert next(e for e in persisted['events'] if e['id']==event['id'])['note']=='PostgreSQL disposition'
             assert next(w for w in persisted['watermarkImages'] if w['id']==image_id)['content']=='已核验水印'
             assert request('/api/watermark-image/'+image_id)==original
             for kind,ident in [('watermarks',wm['id']),('policies',policy['id'])]:request('/api/delete',{'kind':kind,'id':ident})
@@ -187,18 +237,20 @@ def main():
                 c.execute('INSERT INTO watermark_images VALUES(?,?,?,?,?)',('WIMG-0123456789AB',original,original,hashlib.sha256(original).hexdigest(),'image/png'))
                 c.execute("INSERT INTO migrations VALUES('watermarks-v1')")
                 c.execute('INSERT INTO audit VALUES(1,?,?,?,?,?)',('2026-10-23 10:30:00','旧管理员','旧操作','旧目标','旧记录'))
-            migration_env=dict(environment,DLP_DB_NAME=database())
+            migration_env=dict(environment,DLP_DB_NAME=database(),DLP_FILE_ROOT=str(Path(tmp)/'migrated-files'))
             migrated=script('migrate_sqlite_to_postgres.py',['--sqlite',str(legacy)],env=migration_env)
             repeated=script('migrate_sqlite_to_postgres.py',['--sqlite',str(legacy)],env=migration_env)
             assert '跳过' in repeated.stdout
+            script('migrate_image_files.py',env=migration_env)
+            script('migrate_image_files.py',env=migration_env)
             settings=dict(host=migration_env.get('DLP_DB_HOST','127.0.0.1'),port=migration_env.get('DLP_DB_PORT','5432'),user=migration_env.get('DLP_DB_USER','dlpcenter'),password=migration_env.get('DLP_DB_PASSWORD',''),dbname=migration_env['DLP_DB_NAME'])
             with psycopg2.connect(**settings) as target:
                 with target.cursor() as c:
                     c.execute('SELECT data FROM dlp_records');assert c.fetchone()[0]==sample
-                    c.execute('SELECT original FROM dlp_watermark_images');assert bytes(c.fetchone()[0])==original
+                    c.execute('SELECT original_path,original FROM dlp_watermark_images');relative,blob=c.fetchone();assert blob is None and (Path(migration_env['DLP_FILE_ROOT'])/relative).read_bytes()==original
                     c.execute('SELECT count(*) FROM user_tokens');assert c.fetchone()[0]==0
                     c.execute('SELECT operator_name FROM operation_logs');assert c.fetchone()[0]=='旧管理员'
-            print('PASS transactional SQLite-to-PostgreSQL migration, JSON/BYTEA integrity, audit preservation, account conversion and rerun protection',flush=True)
+            print('PASS transactional SQLite-to-PostgreSQL migration, JSON/disk integrity, audit preservation, account conversion and rerun protection',flush=True)
             print('All PostgreSQL integration checks passed.',flush=True)
         finally:
             if process and process.poll() is None:process.terminate();process.wait(timeout=10)

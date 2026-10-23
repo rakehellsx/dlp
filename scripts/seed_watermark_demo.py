@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import urllib.parse
 import urllib.error
 import urllib.request
 
@@ -111,7 +112,15 @@ def main():
         except urllib.error.HTTPError as exc:
             raise RuntimeError(f'{path}: {json.load(exc).get("error",exc.code)}') from None
     api('login',{'username':args.username,'password_hash':hashlib.sha256(password.encode()).hexdigest()})
-    state=api('bootstrap');existing={w['filename'] for w in state['watermarkImages'] if TAG in w.get('note','')}
+    state=api('bootstrap')
+    for kind in ['endpoints','watermarks','watermarkImages']:
+        state[kind]=[];page=1
+        while True:
+            result=api('query?'+urllib.parse.urlencode({'kind':kind,'page':page,'pageSize':100}))
+            state[kind].extend(result['items'])
+            if len(state[kind])>=result['total']:break
+            page+=1
+    existing={w['filename'] for w in state['watermarkImages'] if TAG in w.get('note','')}
     args.output.mkdir(parents=True,exist_ok=True)
     report=[]
     for index,(kind,status,label,department,fmt,title) in enumerate(CASES,1):

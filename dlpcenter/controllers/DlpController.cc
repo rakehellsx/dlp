@@ -1,5 +1,7 @@
 #include "DlpController.h"
 #include "services/Pg.h"
+#include "services/Queries.h"
+#include "services/FileStore.h"
 #include "services/Validation.h"
 #include "services/ImageWorker.h"
 #include "services/WorkerPool.h"
@@ -16,8 +18,6 @@ namespace {
 const std::set<std::string> kinds = {"events",     "endpoints",      "policies", "rules",
                                      "assets",     "approvals",      "scans",    "reports",
                                      "watermarks", "watermarkImages"};
-const std::set<std::string> scopes = {"全体终端",   "研发中心",   "市场营销部", "财务部",
-                                      "人力资源部", "产品设计部", "行政管理部"};
 void require(bool ok, const std::string &message) {
     if (!ok)
         throw std::invalid_argument(message);
@@ -25,23 +25,6 @@ void require(bool ok, const std::string &message) {
 void merge(Json::Value &target, const Json::Value &source) {
     for (const auto &key : source.getMemberNames())
         target[key] = source[key];
-}
-Json::Value audits(Pg &db, int limit = 500) {
-    auto r = db.query(
-        "SELECT id, to_char(created_at AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD HH24:MI:SS') AS "
-        "time,coalesce(operator_name,'未登录') AS actor,action,target,detail,ip,success FROM "
-        "operation_logs ORDER BY id DESC LIMIT $1",
-        {std::to_string(limit)});
-    Json::Value rows(Json::arrayValue);
-    for (int i = 0; i < r.size(); i++) {
-        Json::Value v;
-        v["id"] = Json::Int64(std::stoll(r.get(i, "id")));
-        for (auto key : {"time", "actor", "action", "target", "detail", "ip"})
-            v[key] = r.get(i, key);
-        v["success"] = r.get(i, "success") == "t";
-        rows.append(v);
-    }
-    return rows;
 }
 HttpResponsePtr raw(const std::string &body, const std::string &mime,
                     const std::string &filename = "") {
@@ -95,16 +78,14 @@ HttpResponsePtr dispatch(const HttpRequestPtr &req, const std::string &imageId) 
     }
     if (!imageId.empty()) {
         require(std::regex_match(imageId, std::regex("WIMG-[A-F0-9]{12}")), "图片编号无效");
-        auto r = db.query("SELECT encode(original,'base64') AS original,encode(thumbnail,'base64') "
-                          "AS thumbnail,mime FROM dlp_watermark_images WHERE id=$1",
-                          {imageId});
+        auto r = db.query(
+            "SELECT original_path,thumbnail_path,mime FROM dlp_watermark_images WHERE id=$1",
+            {imageId});
         require(r.size(), "图片不存在或已删除");
         bool thumb = req->getParameter("thumb") == "1",
              download = req->getParameter("download") == "1";
-        auto encoded = r.get(0, thumb ? "thumbnail" : "original");
-        encoded.erase(std::remove(encoded.begin(), encoded.end(), '\n'), encoded.end());
         auto mime = r.get(0, "mime");
-        auto bytes = utils::base64Decode(encoded);
+        auto bytes = readStoredFile(r.get(0, thumb ? "thumbnail_path" : "original_path"));
         std::string filename;
         if (download && !thumb) {
             db.audit(actor, "下载水印原图", imageId, "", ip);
@@ -116,32 +97,6 @@ HttpResponsePtr dispatch(const HttpRequestPtr &req, const std::string &imageId) 
     }
     if (path == "/api/bootstrap") {
         Json::Value data;
-        for (const auto &kind : kinds)
-            data[kind] = db.items(kind);
-        // Serialize progress updates with task creation and preserve the original 20-second demo
-        // duration.
-        db.begin();
-        db.query("SELECT pg_advisory_xact_lock(728113)");
-        auto scans = db.items("scans");
-        for (auto &task : scans)
-            if (task["status"] == "running") {
-                auto progress = std::clamp(
-                    static_cast<int>((std::time(nullptr) - task["createdAt"].asDouble()) * 5), 0,
-                    100);
-                task["progress"] = progress;
-                if (progress >= 100) {
-                    task["status"] = "completed";
-                    int found = 0;
-                    for (const auto &a : data["assets"])
-                        if (task["scope"] == "全体终端" || a["department"] == task["scope"])
-                            found++;
-                    task["found"] = found;
-                }
-                db.put("scans", task);
-            }
-        db.commit();
-        data["scans"] = scans;
-        data["audit"] = audits(db);
         auto settings = db.query("SELECT data::text FROM dlp_settings WHERE id=1");
         require(settings.size(), "请先初始化 PostgreSQL 业务数据");
         data["settings"] = parse(settings.get(0, "data"));
@@ -151,16 +106,56 @@ HttpResponsePtr dispatch(const HttpRequestPtr &req, const std::string &imageId) 
         data["user"]["username"] = user.get(0, "username");
         data["user"]["name"] = user.get(0, "username");
         data["user"]["role"] = user.get(0, "role");
+        data["options"] = lookups(db);
         data["serverTime"] = now();
         data["imageCapabilities"] = capabilities();
         return ApiResponse::ok(data);
+    }
+    if (path == "/api/query" || path == "/api/statistics" || path == "/api/search" ||
+        path == "/api/detail") {
+        Json::Value q(Json::objectValue);
+        for (const auto &v : req->parameters())
+            q[v.first] = v.second;
+        if (path == "/api/query" && q["kind"] == "scans")
+            advanceScans(db);
+        db.begin();
+        db.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+        Json::Value result;
+        if (path == "/api/query")
+            result = listRecords(db, q["kind"].asString(), q);
+        else if (path == "/api/detail")
+            result = recordDetail(db, q["kind"].asString(), q["id"].asString());
+        else if (path == "/api/statistics") {
+            auto readDays = [&q](const char *key) {
+                auto v = q.get(key, "7").asString();
+                require(v == "1" || v == "7" || v == "30", "无效统计周期");
+                return std::stoi(v);
+            };
+            result = statistics(db, readDays("period"), readDays("chartPeriod"));
+        } else {
+            require(q.get("q", "").asString().size() <= 800, "检索词过长");
+            result["items"] = Json::Value(Json::arrayValue);
+            q["pageSize"] = "4";
+            for (auto kind : {"events", "endpoints", "policies"}) {
+                auto found = listRecords(db, kind, q);
+                for (auto row : found["items"]) {
+                    row["kind"] = kind;
+                    result["items"].append(row);
+                }
+            }
+        }
+        db.commit();
+        return ApiResponse::ok(result);
     }
     if (path == "/api/export") {
         auto kind = req->getParameter("kind");
         if (kind.empty())
             kind = "events";
         require(kinds.count(kind) || kind == "audit", "不支持的导出类型");
-        auto rows = kind == "audit" ? audits(db, 100000) : db.items(kind);
+        Json::Value q(Json::objectValue);
+        for (const auto &v : req->parameters())
+            q[v.first] = v.second;
+        auto rows = listRecords(db, kind, q, true)["items"];
         std::string output = "\xEF\xBB\xBF";
         if (!rows.empty()) {
             auto headers = rows[0].getMemberNames();
@@ -203,7 +198,7 @@ HttpResponsePtr dispatch(const HttpRequestPtr &req, const std::string &imageId) 
             db.commit();
             return ApiResponse::ok(out);
         }
-        auto total = db.query("SELECT count(*) AS count,coalesce(sum(octet_length(original)),0) AS "
+        auto total = db.query("SELECT count(*) AS count,coalesce(sum(size),0) AS "
                               "bytes FROM dlp_watermark_images");
         require(std::stoll(total.get(0, "count")) < 200 &&
                     std::stoll(total.get(0, "bytes")) + info["size"].asInt64() <= 300 * 1024 * 1024,
@@ -235,10 +230,14 @@ HttpResponsePtr dispatch(const HttpRequestPtr &req, const std::string &imageId) 
         item["ocrState"] = "not_run";
         item["ocrTime"] = "";
         db.put("watermarkImages", item);
-        db.query("INSERT INTO dlp_watermark_images(id,original,thumbnail,hash,mime) "
-                 "VALUES($1,decode($2,'base64'),decode($3,'base64'),$4,$5)",
-                 {id, result["original"].asString(), result["thumbnail"].asString(),
-                  info["hash"].asString(), info["mime"].asString()});
+        auto originalPath = info["hash"].asString() + "/original",
+             thumbnailPath = info["hash"].asString() + "/thumbnail.jpg";
+        storeFile(originalPath, utils::base64Decode(result["original"].asString()));
+        storeFile(thumbnailPath, utils::base64Decode(result["thumbnail"].asString()));
+        db.query("INSERT INTO dlp_watermark_images(id,original_path,thumbnail_path,hash,mime,size) "
+                 "VALUES($1,$2,$3,$4,$5,$6::bigint)",
+                 {id, originalPath, thumbnailPath, info["hash"].asString(), info["mime"].asString(),
+                  std::to_string(info["size"].asInt64())});
         db.audit(actor, "导入水印图片", info["filename"].asString(),
                  "SHA-256 " + info["hash"].asString(), ip);
         db.commit();
@@ -252,19 +251,35 @@ HttpResponsePtr dispatch(const HttpRequestPtr &req, const std::string &imageId) 
         auto id = text(payload, "id");
         Json::Value extracted;
         if (path == "/api/watermark-images/ocr") {
-            auto r = db.query("SELECT encode(original,'base64') AS original FROM "
-                              "dlp_watermark_images WHERE id=$1",
-                              {id});
+            auto r = db.query("SELECT original_path FROM dlp_watermark_images WHERE id=$1", {id});
             require(r.size(), "水印图片不存在");
             Json::Value work;
             work["action"] = "ocr";
-            work["original"] = r.get(0, "original");
-            auto encoded = work["original"].asString();
-            encoded.erase(std::remove(encoded.begin(), encoded.end(), '\n'), encoded.end());
-            work["original"] = encoded;
-            work["endpoints"] = db.items("endpoints");
-            work["policies"] = db.items("watermarks");
+            work["original"] = utils::base64Encode(readStoredFile(r.get(0, "original_path")));
+            work["endpoints"] = Json::Value(Json::arrayValue);
+            work["policies"] = Json::Value(Json::arrayValue);
             extracted = imageWorker(work);
+            auto content = extracted["text"].asString(),
+                 address = extracted["suggestions"].get("ip", "").asString();
+            auto endpoints = db.query(
+                "SELECT data::text FROM dlp_records WHERE kind='endpoints' AND (($1<>'' AND "
+                "data->>'ip'=$1) OR strpos(lower($2),lower(data->>'name'))>0) ORDER BY seq LIMIT 1",
+                {address, content});
+            if (endpoints.size()) {
+                auto ep = parse(endpoints.get(0, "data"));
+                for (auto key : {"user", "department", "ip"})
+                    extracted["suggestions"][key] = ep[key];
+                extracted["suggestions"]["endpoint"] = ep["name"];
+            }
+            auto policies = db.query(
+                "SELECT data::text FROM dlp_records WHERE kind='watermarks' AND "
+                "(strpos($1,data->>'id')>0 OR strpos($1,data->>'name')>0) ORDER BY seq LIMIT 1",
+                {content});
+            if (policies.size()) {
+                auto policy = parse(policies.get(0, "data"));
+                extracted["suggestions"]["policyId"] = policy["id"];
+                extracted["suggestions"]["type"] = policy["type"];
+            }
         }
         db.begin();
         auto item = db.get("watermarkImages", id, true);
@@ -305,9 +320,13 @@ HttpResponsePtr dispatch(const HttpRequestPtr &req, const std::string &imageId) 
         auto kind = text(payload, "kind");
         auto item = payload["item"];
         require(item.isObject(), "配置必须为对象");
-        if (kind == "watermarks")
+        if (kind == "watermarks") {
             item = watermark(item);
-        else {
+            auto scope = item["scope"].asString();
+            auto found = db.query(
+                "SELECT 1 FROM dlp_catalogs WHERE category='department' AND label=$1", {scope});
+            require(scope == "全体终端" || found.size(), "无效适用范围");
+        } else {
             require(kind == "policies" || kind == "rules", "不支持的配置类型");
             item["name"] = text(item, "name", "", 80);
             require(!item["name"].asString().empty(), "请填写有效名称");
@@ -399,13 +418,15 @@ HttpResponsePtr dispatch(const HttpRequestPtr &req, const std::string &imageId) 
     }
     if (path == "/api/scan") {
         auto scope = text(payload, "scope", "全体终端");
-        require(scopes.count(scope), "无效扫描范围");
+        auto scopeRow = db.query(
+            "SELECT 1 FROM dlp_catalogs WHERE category='department' AND label=$1", {scope});
+        require(scope == "全体终端" || scopeRow.size(), "无效扫描范围");
         db.begin();
         db.query("SELECT pg_advisory_xact_lock(728113)");
-        for (const auto &s : db.items("scans"))
-            require(s["status"] != "running" ||
-                        std::time(nullptr) - s["createdAt"].asDouble() >= 20,
-                    "已有扫描任务正在执行");
+        auto active =
+            db.query("SELECT 1 FROM dlp_records WHERE kind='scans' AND data->>'status'='running' "
+                     "AND extract(epoch FROM now())-(data->>'createdAt')::numeric<20 LIMIT 1");
+        require(!active.size(), "已有扫描任务正在执行");
         Json::Value item;
         item["id"] = randomId("SCAN-", 3);
         item["name"] = text(payload, "name", "敏感数据发现任务", 80);
@@ -426,68 +447,69 @@ HttpResponsePtr dispatch(const HttpRequestPtr &req, const std::string &imageId) 
     if (path == "/api/detect") {
         auto content = text(payload, "content", "", 30000);
         Json::Value hits(Json::arrayValue);
-        for (const auto &rule : db.items("rules"))
-            if (rule.get("enabled", false).asBool()) {
-                Json::Value matches(Json::arrayValue);
-                auto words = rule["keywords"].asString();
-                size_t fullwidth = 0;
-                while ((fullwidth = words.find("，", fullwidth)) != std::string::npos)
-                    words.replace(fullwidth, 3, ",");
-                std::istringstream stream(words);
-                std::string word;
-                while (std::getline(stream, word, ',')) {
-                    Json::Value w;
-                    w["value"] = word;
-                    word = text(w, "value");
-                    if (word.empty())
-                        continue;
+        auto enabledRules = db.query("SELECT data::text FROM dlp_records WHERE kind='rules' AND "
+                                     "data->>'enabled'='true' ORDER BY seq");
+        for (int index = 0; index < enabledRules.size(); index++) {
+            auto rule = parse(enabledRules.get(index, "data"));
+            Json::Value matches(Json::arrayValue);
+            auto words = rule["keywords"].asString();
+            size_t fullwidth = 0;
+            while ((fullwidth = words.find("，", fullwidth)) != std::string::npos)
+                words.replace(fullwidth, 3, ",");
+            std::istringstream stream(words);
+            std::string word;
+            while (std::getline(stream, word, ',')) {
+                Json::Value w;
+                w["value"] = word;
+                word = text(w, "value");
+                if (word.empty())
+                    continue;
+                int count = 0;
+                size_t pos = 0;
+                while ((pos = content.find(word, pos)) != std::string::npos) {
+                    count++;
+                    pos += word.size();
+                }
+                if (count) {
+                    Json::Value m;
+                    m["value"] = word;
+                    m["count"] = count;
+                    matches.append(m);
+                }
+            }
+            if (rule["name"] == "个人信息")
+                for (const auto &spec : std::vector<std::pair<std::string, std::string>>{
+                         {"手机号码", "1[3-9][0-9]{9}"}, {"身份证号", "[0-9]{17}[0-9Xx]"}}) {
+                    std::regex pattern(spec.second);
                     int count = 0;
-                    size_t pos = 0;
-                    while ((pos = content.find(word, pos)) != std::string::npos) {
-                        count++;
-                        pos += word.size();
+                    for (auto it = std::sregex_iterator(content.begin(), content.end(), pattern);
+                         it != std::sregex_iterator(); ++it) {
+                        auto start = it->position(), end = start + it->length();
+                        if ((start == 0 ||
+                             !std::isdigit(static_cast<unsigned char>(content[start - 1]))) &&
+                            (end == static_cast<long>(content.size()) ||
+                             !std::isdigit(static_cast<unsigned char>(content[end]))))
+                            count++;
                     }
                     if (count) {
                         Json::Value m;
-                        m["value"] = word;
+                        m["value"] = spec.first;
                         m["count"] = count;
                         matches.append(m);
                     }
                 }
-                if (rule["name"] == "个人信息")
-                    for (const auto &spec : std::vector<std::pair<std::string, std::string>>{
-                             {"手机号码", "1[3-9][0-9]{9}"}, {"身份证号", "[0-9]{17}[0-9Xx]"}}) {
-                        std::regex pattern(spec.second);
-                        int count = 0;
-                        for (auto it =
-                                 std::sregex_iterator(content.begin(), content.end(), pattern);
-                             it != std::sregex_iterator(); ++it) {
-                            auto start = it->position(), end = start + it->length();
-                            if ((start == 0 ||
-                                 !std::isdigit(static_cast<unsigned char>(content[start - 1]))) &&
-                                (end == static_cast<long>(content.size()) ||
-                                 !std::isdigit(static_cast<unsigned char>(content[end]))))
-                                count++;
-                        }
-                        if (count) {
-                            Json::Value m;
-                            m["value"] = spec.first;
-                            m["count"] = count;
-                            matches.append(m);
-                        }
-                    }
-                if (!matches.empty()) {
-                    Json::Value hit;
-                    hit["rule"] = rule["name"];
-                    hit["level"] = rule["level"];
-                    hit["matches"] = matches;
-                    int count = 0;
-                    for (const auto &m : matches)
-                        count += m["count"].asInt();
-                    hit["count"] = count;
-                    hits.append(hit);
-                }
+            if (!matches.empty()) {
+                Json::Value hit;
+                hit["rule"] = rule["name"];
+                hit["level"] = rule["level"];
+                hit["matches"] = matches;
+                int count = 0;
+                for (const auto &m : matches)
+                    count += m["count"].asInt();
+                hit["count"] = count;
+                hits.append(hit);
             }
+        }
         db.audit(actor, "规则检测测试", "内容识别引擎",
                  "命中 " + std::to_string(hits.size()) + " 类规则", ip);
         Json::Value out;
@@ -500,9 +522,20 @@ HttpResponsePtr dispatch(const HttpRequestPtr &req, const std::string &imageId) 
         auto current = db.query("SELECT data::text FROM dlp_settings WHERE id=1 FOR UPDATE");
         require(current.size(), "系统设置尚未初始化");
         auto settings = parse(current.get(0, "data"));
-        for (const auto &key : settings.getMemberNames())
-            if (payload.isMember(key))
-                settings[key] = payload[key];
+        const std::set<std::string> settingKeys = {
+            "company",    "email",        "retention", "offlineProtection",
+            "autoUpdate", "notification", "watermark"};
+        for (const auto &key : payload.getMemberNames()) {
+            require(settingKeys.count(key), "不支持的系统设置字段");
+            settings[key] = payload[key];
+        }
+        if (settings.isMember("email")) {
+            auto email = text(settings, "email", "", 254);
+            require(email.empty() || std::regex_match(email, std::regex("[^ @]+@[^ @]+\\.[^ @]+")),
+                    "邮箱格式无效");
+            settings["email"] = email;
+        }
+
         settings["company"] = text(settings, "company", "", 100);
         require(!settings["company"].asString().empty() && settings["retention"].isInt() &&
                     settings["retention"].asInt() >= 7 && settings["retention"].asInt() <= 3650,
@@ -519,34 +552,16 @@ HttpResponsePtr dispatch(const HttpRequestPtr &req, const std::string &imageId) 
         auto period = text(payload, "period", "最近7天");
         require(period == "最近7天" || period == "最近30天" || period == "全部数据",
                 "统计周期无效");
-        int days = period == "最近7天" ? 7 : period == "最近30天" ? 30 : 36500;
-        auto cutoffTime = std::time(nullptr) - static_cast<time_t>(days) * 86400;
-        std::tm tm{};
-        localtime_r(&cutoffTime, &tm);
-        std::ostringstream cutoff;
-        cutoff << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
-        int total = 0, blocked = 0, high = 0, pending = 0;
-        for (const auto &e : db.items("events"))
-            if (e["time"].asString() >= cutoff.str()) {
-                total++;
-                blocked += e["action"] == "blocked";
-                high += e["severity"] == "high";
-                pending += e["status"] == "pending";
-            }
-        Json::Value item;
+        int days = period == "最近7天" ? 7 : period == "最近30天" ? 30 : 0;
+        db.begin();
+        db.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
+        Json::Value item = reportSnapshot(db, days);
         item["id"] = randomId("RPT-", 3);
         item["name"] = text(payload, "name", "数据安全运营报告", 80);
         require(!item["name"].asString().empty(), "请填写报告名称");
         item["period"] = period;
         item["time"] = now();
         item["status"] = "completed";
-        item["events"] = total;
-        item["blocked"] = blocked;
-        item["high"] = high;
-        item["pending"] = pending;
-        item["endpoints"] = db.items("endpoints").size();
-        item["assets"] = db.items("assets").size();
-        db.begin();
         db.put("reports", item);
         db.audit(actor, "生成报告", item["name"].asString(), "", ip);
         db.commit();

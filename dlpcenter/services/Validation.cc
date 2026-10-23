@@ -67,9 +67,7 @@ Json::Value watermark(const Json::Value &v) {
          it != std::sregex_iterator(); ++it)
         require(tokens.count((*it)[1]), "水印内容包含不支持的动态字段");
     r["type"] = option(v, "type", "screen", {"print", "screen", "screenshot"});
-    r["scope"] = option(
-        v, "scope", "全体终端",
-        {"全体终端", "研发中心", "市场营销部", "财务部", "人力资源部", "产品设计部", "行政管理部"});
+    r["scope"] = text(v, "scope", "全体终端", 80);
     r["condition"] = option(v, "condition", "always", {"always", "sensitive", "apps"});
     r["fontFamily"] =
         option(v, "fontFamily", "Microsoft YaHei", {"Microsoft YaHei", "SimSun", "Arial"});

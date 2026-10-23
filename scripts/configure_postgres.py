@@ -46,7 +46,7 @@ c.close()
             values={'DLP_DB_HOST':'127.0.0.1','DLP_DB_PORT':'5432','DLP_DB_NAME':args.database,'DLP_DB_USER':args.user,
                 'DLP_DB_PASSWORD':password,'DLP_HTTP_HOST':'127.0.0.1','DLP_HTTP_PORT':str(args.http_port),
                 'DLP_CONFIG':str(root/'dlpcenter/config.json'),'DLP_STATIC_ROOT':str(root/'static'),
-                'DLP_IMAGE_HELPER':str(root/'dlpcenter/tools/image_processor.py'),'TZ':'Asia/Shanghai'}
+                'DLP_IMAGE_HELPER':str(root/'dlpcenter/tools/image_processor.py'),'DLP_FILE_ROOT':'/var/lib/sentinel-dlp/files','TZ':'Asia/Shanghai'}
             for key,value in values.items():output.write(key+'='+json.dumps(value)+'\n')
     except BaseException:
         args.env_file.unlink(missing_ok=True);raise

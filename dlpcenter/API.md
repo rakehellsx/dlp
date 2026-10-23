@@ -344,8 +344,8 @@ async function sha256Hex(text) {
 | 方法 | 路径 | 权限 | 用途 |
 |---|---|---|---|
 | GET | /health | 公开 | 检查 PostgreSQL 连接，标识 C++ / PostgreSQL 后端 |
-| GET | /api/bootstrap | 登录 | 所有业务记录、当前用户、设置、审计、图片能力 |
-| GET | /api/export?kind=events | 登录 | events/endpoints/policies/rules/assets/approvals/scans/reports/watermarks/watermarkImages/audit CSV |
+| GET | /api/bootstrap | 登录 | 当前用户、设置、业务字典、下拉选项、图片能力；不返回全量业务记录 |
+| GET | /api/export?kind=events | 登录 | 沿用 query 的筛选条件， events/endpoints/policies/rules/assets/approvals/scans/reports/watermarks/watermarkImages/audit CSV |
 | POST | /api/save | 管理员 | `{kind,item}`，保存 policies/rules/watermarks |
 | POST | /api/update | 管理员 | `{kind,ids,changes}`，事件处置、终端隔离、审批、策略启停 |
 | POST | /api/delete | 管理员 | `{kind,id}`，删除 policies/rules/watermarks |
@@ -356,7 +356,7 @@ async function sha256Hex(text) {
 | POST | /api/watermark-images/import | 管理员 | `{filename,data,title?,note?,metadata?}`，Base64图片导入 |
 | POST | /api/watermark-images/save | 管理员 | `{id,metadata}`，保存人工核验信息 |
 | POST | /api/watermark-images/ocr | 管理员 | `{id}`，返回 `item` 和待核验 `suggestions` |
-| POST | /api/watermark-images/delete | 管理员 | `{id}`，同事务删除原图、缩略图与元数据 |
+| POST | /api/watermark-images/delete | 管理员 | `{id}`，同事务删除文件索引与元数据；接口立即停止提供该图片 |
 | GET | /api/watermark-image/{id} | 登录 | 原图；`?thumb=1` 缩略图；`?download=1` 下载 |
 
 浏览器可以使用登录返回的 HttpOnly `dlp_token` Cookie，同源写请求带 `X-DLP-Request: 1`；外部客户端继续使用 `Authorization: Bearer <token>`。图片不支持查询参数 Token。
@@ -364,3 +364,16 @@ async function sha256Hex(text) {
 新增环境变量见 `deploy/dlpcenter.env.example`。新服务端只连接 PostgreSQL，不访问旧 SQLite 数据库。原登录会话不会迁移，切换后请重新登录。
 
 普通用户可以读取业务数据和执行内容识别；业务配置、审批及图片修改要求管理员。改密后的已有 Token 行为沿用原项目：不会自动清除，前端应引导重新登录。
+
+
+## 5. PostgreSQL 查询接口
+
+- `GET /api/query?kind=events&page=1&pageSize=10`：返回 `{code,items,total,page,pageSize}`。`kind` 支持 events / endpoints / policies / rules / assets / approvals / scans / reports / watermarks / watermarkImages / audit。
+- 筛选参数：`q`（字面文本，`%` / `_` 不作为通配符）、status / severity / channel / department / action / risk / scope / type / endpointId / endpoint / owner / policyId / rule / os；`enabledState=enabled|disabled`；`from` / `to` 为包含边界日期的 `YYYY-MM-DD`。
+- 排序参数：`sort=time|name|priority|importedAt|id`，`direction=asc|desc`；分页大小 1–100。所有条件由 SQL 执行，使用参数绑定。
+- `GET /api/statistics?period=7&chartPeriod=7`：返回总量、导航待办、终端 / 资产 / 策略 / 水印摘要、趋势、部门排行、通道分布和重点事件。period 支持 1（服务器时区今天）/ 7 / 30，chartPeriod 为 7 / 30。结果来自 SQL 聚合及数据库一致性快照。
+- `GET /api/search?q=关键词`：返回 events / endpoints / policies 的搜索结果，每类最多 4 条，数据库检索。
+- `GET /api/detail?kind=endpoints&id=...`：返回 `{item,related}`；终端和图片详情包含数据库关联查询返回的 events / eventCount，图片另含 endpoint / policy。
+- `GET /api/export` 接受同一组查询筛选及排序参数，导出全部匹配结果。
+
+部门和通道选项保存在 `dlp_catalogs`；系统设置保存在 `dlp_settings`；所有策略及水印配置保存在 `dlp_records`。图片二进制由磁盘读取，`dlp_watermark_images` 保存相对路径、大小、MIME 和哈希。原 BYTEA 字段仅作为升级入口，迁移后置空，运行接口不会从中读取图片。删除后不再提供图片；不可变文件保留供一致性备份使用，备份包含文件归档。
